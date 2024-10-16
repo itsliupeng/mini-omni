@@ -11,6 +11,23 @@
             "program": "inference.py",
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        {
+            "name": "infer_yi_omni",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "inference_yi_omni.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {"CUDA_LAUNCH_BLOCKING": "1", "TORCH_USE_CUDA_DSA": "1"}
+        },
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
         }
     ]
 }

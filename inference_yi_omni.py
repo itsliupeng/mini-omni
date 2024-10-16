@@ -24,13 +24,14 @@ from utils.snac_utils import get_snac, generate_audio_data
 import whisper
 from tqdm import tqdm
 from huggingface_hub import snapshot_download
-
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 torch.set_printoptions(sci_mode=False)
 
 
 # TODO
-text_vocabsize = 151936
+text_vocabsize = 64000
 text_specialtokens = 64
 audio_vocabsize = 4096
 audio_specialtokens = 64
@@ -86,7 +87,7 @@ def get_input_ids_whisper(
     with torch.no_grad():
         mel = mel.unsqueeze(0).to(device)
         # audio_feature = whisper.decode(whispermodel,mel, options).audio_features
-        audio_feature = whispermodel.embed_audio(mel)[0][:leng]
+        audio_feature = whispermodel.encoder(mel)[0][:leng]
 
     T = audio_feature.size(0)
     input_ids = []
@@ -213,8 +214,8 @@ def A1_T2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
 
 def A1_A2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
           snacmodel, out_dir=None):
-    with fabric.init_tensor():
-        model.set_kv_cache(batch_size=1)
+    # with fabric.init_tensor():
+    #     model.set_kv_cache(batch_size=1)
     tokenlist = generate_AA(
         model,
         audio_feature,
@@ -231,6 +232,12 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
         include_prompt=True,
         generate_text=True,
     )
+    
+    output_ids = model.generate(input_ids.to('cuda'), max_new_tokens=64)
+    
+    
+    
+    
     audiolist = reconscruct_snac(tokenlist)
     tokenlist = tokenlist[-1]
     if text_vocabsize in tokenlist:
@@ -348,21 +355,26 @@ def T1_T2(fabric, input_ids, model, text_tokenizer, step):
     
 def load_model(ckpt_dir, device):
     snacmodel = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval().to(device)
-    whispermodel = whisper.load_model("small").to(device)
-    text_tokenizer = Tokenizer(ckpt_dir)
+    # whispermodel = whisper.load_model("medium").to(device)
+    text_tokenizer = Tokenizer("/lp/models/Yi-6B")
     fabric = L.Fabric(devices=1, strategy="auto")
-    config = Config.from_file(ckpt_dir + "/model_config.yaml")
-    config.post_adapter = False
+    # config = Config.from_file(ckpt_dir + "/model_config.yaml")
+    # config.post_adapter = False
 
     with fabric.init_module(empty_init=False):
-        model = GPT(config)
+        model = AutoModelForCausalLM.from_pretrained(
+            ckpt_dir,
+            device_map="cpu",
+            torch_dtype=torch.float,
+            trust_remote_code=True
+        )
 
     model = fabric.setup(model)
-    state_dict = lazy_load(ckpt_dir + "/lit_model.pth")
-    model.load_state_dict(state_dict, strict=True)
+    # state_dict = lazy_load(ckpt_dir + "/lit_model.pth")
+    # model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
 
-    return fabric, model, text_tokenizer, snacmodel, whispermodel
+    return fabric, model, text_tokenizer, snacmodel, model.audio_model
 
     
 def download_model(ckpt_dir):
@@ -509,10 +521,11 @@ class OmniInference:
 def test_infer():
     device = "cuda:0"
     out_dir = f"./output/{get_time_str()}"
-    ckpt_dir = f"/lp/models/mini-omni"
-    if not os.path.exists(ckpt_dir):
-        print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
-        download_model(ckpt_dir)
+    # ckpt_dir = f"/lp/models/mini-omni"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_yi_2b_4m_bs1024_load_d1009_w0_banlance_loss_freeze/test_yi_2b_4m_bs1024_load_d1009_w0_banlance_loss_freeze/checkpoint/iter_0056000_hf"
+    # if not os.path.exists(ckpt_dir):
+    #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
+    #     download_model(ckpt_dir)
 
     fabric, model, text_tokenizer, snacmodel, whispermodel = load_model(ckpt_dir, device)
 
@@ -570,8 +583,9 @@ def test_infer():
                     print(
                         "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
                     )
-                except:
-                    print(f"[error] failed to process {path}")
+                except Exception as e:
+                    # raise e
+                    print(f"[error] {e} failed to process {path}")
             print("===============================================================")
 
         if 'asr' in task:

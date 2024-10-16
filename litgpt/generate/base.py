@@ -107,9 +107,10 @@ def next_token_A1T2(
 ) -> torch.Tensor:
     input_pos = input_pos.to(model.device)
     input_ids = [input_id.to(model.device) for input_id in input_ids]
-    logits_a, logit_t = model(
-        audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task
-    )
+    with torch.no_grad():
+        logits_a, logit_t = model(
+            audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task
+        )
 
     next_audio_tokens = []
     for logit_a in logits_a:
