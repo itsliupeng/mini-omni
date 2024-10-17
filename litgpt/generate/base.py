@@ -103,13 +103,15 @@ def next_token_A1T2(
     whisper_lens: int,
     task: list,
     input_pos: torch.Tensor,
+    past_key_values=None,
     **kwargs: Any,
 ) -> torch.Tensor:
-    input_pos = input_pos.to(model.device)
+    input_pos = input_pos.to(model.device).unsqueeze(0)
     input_ids = [input_id.to(model.device) for input_id in input_ids]
+    model.eval()
     with torch.no_grad():
-        logits_a, logit_t = model(
-            audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task
+        logits_a, logit_t, past_key_values = model(
+            audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task, past_key_values=past_key_values
         )
 
     next_audio_tokens = []
@@ -117,7 +119,7 @@ def next_token_A1T2(
         next_a = sample(logit_a, **kwargs).to(dtype=input_ids[0].dtype)
         next_audio_tokens.append(next_a)
     next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
-    return next_audio_tokens, next_t
+    return next_audio_tokens, next_t, past_key_values
 
 
 def next_token_A1T1(
@@ -584,13 +586,14 @@ def generate_TA(
     shift: Optional[int] = None,
     include_prompt: bool = True,
     generate_text=False,
+    layershift_shift=152000
 ) -> torch.Tensor:
 
     T = input_ids[0].size(1)
     device = input_ids[0].device
 
     output = [[] for _ in range(8)]
-    tokens_A, token_T = next_token_A1T2(
+    tokens_A, token_T, past_key_values = next_token_A1T2(
         model,
         None,
         input_ids,
@@ -612,7 +615,7 @@ def generate_TA(
         model_input_ids = []
         for i in range(7):
             model_input_ids.append(
-                layershift(tokens_A[i].clone(), i)
+                layershift(tokens_A[i].clone(), i, shift=layershift_shift)
                 .view(1, -1)
                 .to(torch.int32)
                 .to(device)
@@ -629,6 +632,7 @@ def generate_TA(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            past_key_values=past_key_values
         )
 
         if text_end:
@@ -666,13 +670,14 @@ def generate_AA(
     shift: Optional[int] = None,
     include_prompt: bool = True,
     generate_text=False,
+    layershift_shift=152000
 ) -> torch.Tensor:
 
     T = input_ids[0].size(1)
     device = input_ids[0].device
 
     output = [[] for _ in range(8)]
-    tokens_A, token_T = next_token_A1T2(
+    tokens_A, token_T, past_key_values = next_token_A1T2(
         model,
         audio_features.to(torch.float32).to(model.device),
         input_ids,
@@ -695,14 +700,14 @@ def generate_AA(
         model_input_ids = []
         for i in range(7):
             model_input_ids.append(
-                layershift(tokens_A[i].clone(), i)
+                layershift(tokens_A[i].clone(), i, shift=layershift_shift)
                 .view(1, -1)
                 .to(torch.int32)
                 .to(device)
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
 
-        tokens_A, token_T = next_token_A1T2(
+        tokens_A, token_T, past_key_values = next_token_A1T2(
             model,
             None,
             model_input_ids,
@@ -712,6 +717,7 @@ def generate_AA(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            past_key_values=past_key_values
         )
 
         if text_end:

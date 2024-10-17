@@ -19,7 +19,7 @@ from litgpt.generate.base import (
 import soundfile as sf
 from litgpt.model import GPT, Config
 from lightning.fabric.utilities.load import _lazy_load as lazy_load
-from utils.snac_utils import layershift, reconscruct_snac, reconstruct_tensors, get_time_str
+from utils.snac_utils import reconscruct_snac, reconstruct_tensors, get_time_str
 from utils.snac_utils import get_snac, generate_audio_data
 import whisper
 from tqdm import tqdm
@@ -28,6 +28,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 torch.set_printoptions(sci_mode=False)
+
 
 
 # TODO
@@ -50,6 +51,11 @@ _pad_a = audio_vocabsize + 1
 _input_a = audio_vocabsize + 2
 _answer_a = audio_vocabsize + 3
 _split = audio_vocabsize + 4
+
+
+
+def layershift(input_id, layer, stride=padded_audio_vocabsize, shift=padded_text_vocabsize):
+    return input_id + shift + layer * stride
 
 
 def get_input_ids_TA(text, text_tokenizer):
@@ -231,12 +237,8 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
         shift=padded_text_vocabsize,
         include_prompt=True,
         generate_text=True,
+        layershift_shift=padded_text_vocabsize,
     )
-    
-    output_ids = model.generate(input_ids.to('cuda'), max_new_tokens=64)
-    
-    
-    
     
     audiolist = reconscruct_snac(tokenlist)
     tokenlist = tokenlist[-1]
@@ -357,11 +359,12 @@ def load_model(ckpt_dir, device):
     snacmodel = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval().to(device)
     # whispermodel = whisper.load_model("medium").to(device)
     text_tokenizer = Tokenizer("/lp/models/Yi-6B")
-    fabric = L.Fabric(devices=1, strategy="auto")
+    # fabric = L.Fabric(devices=1, strategy="auto")
     # config = Config.from_file(ckpt_dir + "/model_config.yaml")
     # config.post_adapter = False
 
-    with fabric.init_module(empty_init=False):
+    # with fabric.init_module(empty_init=False):
+    if True:
         model = AutoModelForCausalLM.from_pretrained(
             ckpt_dir,
             device_map="cpu",
@@ -369,12 +372,12 @@ def load_model(ckpt_dir, device):
             trust_remote_code=True
         )
 
-    model = fabric.setup(model)
+    # model = fabric.setup(model)
     # state_dict = lazy_load(ckpt_dir + "/lit_model.pth")
     # model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
 
-    return fabric, model, text_tokenizer, snacmodel, model.audio_model
+    return None, model, text_tokenizer, snacmodel, model.audio_model
 
     
 def download_model(ckpt_dir):
@@ -584,7 +587,7 @@ def test_infer():
                         "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
                     )
                 except Exception as e:
-                    # raise e
+                    raise e
                     print(f"[error] {e} failed to process {path}")
             print("===============================================================")
 
