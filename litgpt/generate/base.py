@@ -129,15 +129,30 @@ def next_token_A1T1(
     whisper_lens: int,
     task: list,
     input_pos: torch.Tensor,
+    past_key_values=None,
     **kwargs: Any,
 ) -> torch.Tensor:
-    input_pos = input_pos.to(model.device)
+    # input_pos = input_pos.to(model.device)
+    # input_ids = [input_id.to(model.device) for input_id in input_ids]
+    # logits_a, logit_t = model(
+    #     audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task
+    # )
+    # next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
+
+    input_pos = input_pos.to(model.device).unsqueeze(0)
     input_ids = [input_id.to(model.device) for input_id in input_ids]
-    logits_a, logit_t = model(
-        audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task
-    )
+    with torch.no_grad():
+        logits_a, logit_t, past_key_values = model(
+            audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task, past_key_values=past_key_values
+        )
+
+    next_audio_tokens = []
+    for logit_a in logits_a:
+        next_a = sample(logit_a, **kwargs).to(dtype=input_ids[0].dtype)
+        next_audio_tokens.append(next_a)
     next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
-    return next_t
+    
+    return next_t, past_key_values
 
 
 def next_token_batch(
@@ -459,7 +474,7 @@ def generate_TT(
     device = input_ids[0].device
 
     output = []
-    token_T = next_token_A1T1(
+    token_T, past_key_values = next_token_A1T1(
         model,
         None,
         input_ids,
@@ -477,14 +492,15 @@ def generate_TT(
     for _ in tqdm(range(2, max_returned_tokens - T + 1)):
         model_input_ids = []
         for i in range(7):
-            model_input_ids.append(
-                torch.tensor([layershift(snac_config.end_of_audio, i)])
-                .view(1, -1)
-                .to(torch.int32)
-                .to(device)
-            )
+            model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
+            # model_input_ids.append(
+            #     torch.tensor([layershift(snac_config.end_of_audio, i)])
+            #     .view(1, -1)
+            #     .to(torch.int32)
+            #     .to(device)
+            # )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
-        token_T = next_token_A1T1(
+        token_T, past_key_values = next_token_A1T1(
             model,
             None,
             model_input_ids,
@@ -494,6 +510,7 @@ def generate_TT(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            past_key_values = past_key_values
         )
         if token_T == eos_id_t:
             break
@@ -526,7 +543,7 @@ def generate_AT(
     device = input_ids[0].device
 
     output = []
-    token_T = next_token_A1T1(
+    token_T, past_key_values = next_token_A1T1(
         model,
         audio_features.to(torch.float32).to(model.device),
         input_ids,
@@ -550,7 +567,7 @@ def generate_AT(
                 .to(device)
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
-        token_T = next_token_A1T1(
+        token_T, past_key_values = next_token_A1T1(
             model,
             None,
             model_input_ids,
@@ -560,6 +577,7 @@ def generate_AT(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            past_key_values=past_key_values
         )
         if token_T == eos_id_t:
             break
@@ -760,7 +778,7 @@ def generate_ASR(
     T = input_ids[0].size(1)
     device = input_ids[0].device
     output = []
-    token_T = next_token_A1T1(
+    token_T, past_key_values = next_token_A1T1(
         model,
         audio_features.to(torch.float32).to(model.device),
         input_ids,
@@ -784,7 +802,7 @@ def generate_ASR(
                 .to(device)
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
-        token_T = next_token_A1T1(
+        token_T, past_key_values = next_token_A1T1(
             model,
             None,
             model_input_ids,
@@ -794,6 +812,7 @@ def generate_ASR(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            past_key_values=past_key_values
         )
         if token_T == eos_id_t:
             break

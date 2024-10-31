@@ -17,7 +17,7 @@ def get_time_str():
     return time_str
 
 
-def layershift(input_id, layer, stride=4160, shift=152000):
+def layershift(input_id, layer, stride=4160, shift=64000+64): # attention: for Yi-model
     return input_id + shift + layer * stride
 
     
