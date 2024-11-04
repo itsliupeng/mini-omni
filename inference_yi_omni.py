@@ -74,16 +74,6 @@ def get_input_ids_TA(text, text_tokenizer):
 def get_input_ids_TT(text, text_tokenizer):
     input_ids_item = [[] for i in range(8)]
     text_tokens = text_tokenizer.encode(text).tolist()
-
-    # for i in range(7):
-    #     input_ids_item[i] = torch.tensor(
-    #         [layershift(_pad_a, i)] * (len(text_tokens) + 3)
-    #     ).unsqueeze(0)
-    
-    # for i in range(7):
-    #     input_ids_item[i] = torch.tensor(
-    #         [layershift(_pad_a, i)] * (len(text_tokens) + 3)
-    #     ).unsqueeze(0)
     
     input_ids_item[-1] = [_input_t] + text_tokens + [_eot] + [_answer_t]
     input_ids_item[-1] = torch.tensor(input_ids_item[-1]).unsqueeze(0)
@@ -107,7 +97,7 @@ def get_input_ids_whisper(
         mel = mel.unsqueeze(0).to(device)
         # audio_feature = whisper.decode(whispermodel,mel, options).audio_features
         # audio_feature = whispermodel.encoder(mel)[0][:leng]
-        audio_feature = whispermodel.encoder(mel)[0]
+        audio_feature = whispermodel.encoder(mel)[0][:leng]
 
     T = audio_feature.size(0)
     input_ids = []
@@ -140,7 +130,7 @@ def get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device):
         input_ids_item += [layershift(_pad_a, i)] * T
         input_ids_item += [(layershift(_eoa, i)), layershift(_answer_a, i)]
         input_ids_AA.append(torch.tensor(input_ids_item))
-    input_id_T = torch.tensor([_input_t] + [_pad_t] * T + [_eot, _answer_t])
+    input_id_T = torch.tensor([_input_t] + [_pad_t] * T + [_eot, _pad_t])
     input_ids_AA.append(input_id_T)
 
     input_ids_AT = []
@@ -172,8 +162,8 @@ def load_audio(path):
 
 def A1_A2_batch(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
                 snacmodel, out_dir=None):
-    with fabric.init_tensor():
-        model.set_kv_cache(batch_size=2)
+    # with fabric.init_tensor():
+    #     model.set_kv_cache(batch_size=2)
     tokenlist = generate_TA_BATCH(
         model,
         audio_feature,
@@ -211,7 +201,7 @@ def A1_A2_batch(fabric, audio_feature, input_ids, leng, model, text_tokenizer, s
         audio_hat.squeeze().cpu().numpy(),
         24000,
     )
-    model.clear_kv_cache()
+    # model.clear_kv_cache()
     return text
 
 
@@ -247,7 +237,7 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
         input_ids,
         [leng],
         ["A1T2"],
-        max_returned_tokens=256,
+        max_returned_tokens=2048,
         temperature=0.9,
         top_k=1,
         eos_id_a=_eoa,
@@ -269,7 +259,9 @@ def A1_A2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
         out_dir = out_dir + "/A1-A2"
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-        
+    if len(audiolist) == 0:
+        return ""
+
     audio = reconstruct_tensors(audiolist)
     with torch.inference_mode():
         audio_hat = snacmodel.decode(audio)
@@ -554,7 +546,9 @@ def test_infer():
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio/yi_6b_8m_bs1024_load_wm_asr_pool_d1026_shuffle_size_A_sr/checkpoint/iter_0010554_hf_pool"
     
     # AA AT
-    ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_amode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0008000_hf"
+    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_amode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0008000_hf"
+    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_amode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0024000_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0032000_hf"
     
     
     # if not os.path.exists(ckpt_dir):
@@ -564,7 +558,8 @@ def test_infer():
     fabric, model, text_tokenizer, snacmodel, whispermodel = load_model(ckpt_dir, device)
 
     # task = ['A1A2', 'asr', "T1A2", "AA-BATCH", 'T1T2', 'AT']
-    task = ["AT"]
+    task = ["AA-BATCH"]
+    print(f"task: {task}")
     # task = ["A1A2"]
 
     # prepare test data
@@ -581,7 +576,7 @@ def test_infer():
         "a gentleman living in the west when there was so much damage done by grasshoppers found that the owls were living on them and not eating much of any other kind of food the only way he could tell what the owls had for supper was to shoot an owl once in awhile and see what was in its stomach"
     ]
     test_text_list = [
-        "Nope",
+        # "Nope",
         "Once upon a time in a distant land,",
         "How are you feeling today?",
         "Can you describe your surroundings?",
@@ -605,10 +600,11 @@ def test_infer():
                 # if idx < 1:
                 #     continue
                 try:
-                    mel, leng = load_audio(path) # [80, 3000], 98
-                    text = test_audio_transcripts[idx]
-                    print(f"input: {text}")
-                    audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device, text=None, text_tokenizer=text_tokenizer)      
+                    mel, leng = load_audio(path)
+                    audio_feature, input_ids = get_input_ids_whisper(
+                        mel, leng, whispermodel, device, 
+                        special_token_a=_answer_a, special_token_t=_pad_t
+                    )
                     text = A1_A2(
                         fabric,
                         audio_feature,
@@ -620,6 +616,7 @@ def test_infer():
                         snacmodel,
                         out_dir=out_dir,
                     )
+                
                     print(f"input: {test_audio_transcripts[step]}")
                     print(f"output: {text}")
                     step += 1

@@ -132,13 +132,6 @@ def next_token_A1T1(
     past_key_values=None,
     **kwargs: Any,
 ) -> torch.Tensor:
-    # input_pos = input_pos.to(model.device)
-    # input_ids = [input_id.to(model.device) for input_id in input_ids]
-    # logits_a, logit_t = model(
-    #     audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task
-    # )
-    # next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
-
     input_pos = input_pos.to(model.device).unsqueeze(0)
     input_ids = [input_id.to(model.device) for input_id in input_ids]
     with torch.no_grad():
@@ -162,12 +155,13 @@ def next_token_batch(
     whisper_lens: int,
     task: list,
     input_pos: torch.Tensor,
+    past_key_values=None,
     **kwargs: Any,
 ) -> torch.Tensor:
     input_pos = input_pos.to(model.device)
     input_ids = [input_id.to(model.device) for input_id in input_ids]
-    logits_a, logit_t = model(
-        audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task
+    logits_a, logit_t, past_key_values = model(
+        audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task, past_key_values=past_key_values
     )
 
     for i in range(7):
@@ -179,7 +173,7 @@ def next_token_batch(
         next_a = sample(logit_a, **kwargs).to(dtype=input_ids[0].dtype)
         next_audio_tokens.append(next_a)
     next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
-    return next_audio_tokens, next_t
+    return next_audio_tokens, next_t, past_key_values
 
 
 # torch._dynamo.config.automatic_dynamic_shapes = True
@@ -373,42 +367,41 @@ def generate_TA_BATCH(
             f"max_seq_length {model.max_seq_length} needs to be >= {max_returned_tokens - 1}"
         )
 
-    input_pos = torch.tensor([T], device=device)
-    model_input_ids = input_ids
-
-    list_output = [[] for i in range(8)]
-
-    tokens_A, token_T = next_token_batch(
+    tokens_A, token_T, past_key_values = next_token_batch(
         model,
         audio_features.to(torch.float32).to(model.device),
         input_ids,
         [T - 3, T - 3],
         ["A1T2", "A1T2"],
-        input_pos=torch.arange(0, T, device=device),
+        input_pos=torch.cat([torch.arange(0, T, device=device).unsqueeze(0) for i in range(audio_features.size(0))], 0),
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
     )
 
+    list_output = [[] for i in range(8)]
     for i in range(7):
         list_output[i].append(tokens_A[i].tolist()[0])
     list_output[7].append(token_T.tolist()[0])
+    # list_output[7].append(pad_id_t)
 
     model_input_ids = [[] for i in range(8)]
     for i in range(7):
-        tokens_A[i] = tokens_A[i].clone() + shift + i * snac_config.padded_vocab_size
+        tokens_A[i] = layershift(tokens_A[i], i, snac_config.padded_vocab_size, shift)
         model_input_ids[i].append(tokens_A[i].clone().to(device).to(torch.int32))
-        model_input_ids[i].append(torch.tensor([layershift(snac_config.end_of_audio, i)], device=device))
+        model_input_ids[i].append(torch.tensor([layershift(snac_config.end_of_audio, i, snac_config.padded_vocab_size, shift)], device=device))
         model_input_ids[i] = torch.stack(model_input_ids[i])
 
-    model_input_ids[-1].append(token_T.clone().to(torch.int32))
+    # model_input_ids[-1].append(token_T.clone().to(torch.int32))
+    model_input_ids[-1].append(torch.tensor([pad_id_t], device=token_T.device))
     model_input_ids[-1].append(token_T.clone().to(torch.int32))
     model_input_ids[-1] = torch.stack(model_input_ids[-1])
 
     text_end = False
 
+    input_pos = torch.tensor([[T], [T]], device=device)
     for _ in range(2, max_returned_tokens - T + 1):
-        tokens_A, token_T = next_token_batch(
+        tokens_A, token_T, past_key_values = next_token_batch(
             model,
             None,
             model_input_ids,
@@ -418,6 +411,7 @@ def generate_TA_BATCH(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            past_key_values=past_key_values
         )
 
         if text_end:
@@ -431,17 +425,17 @@ def generate_TA_BATCH(
         for i in range(7):
             list_output[i].append(tokens_A[i].tolist()[0])
         list_output[7].append(token_T.tolist()[0])
+        # list_output[7].append(pad_id_t)
 
         model_input_ids = [[] for i in range(8)]
         for i in range(7):
-            tokens_A[i] = tokens_A[i].clone() + shift + i * snac_config.padded_vocab_size
+            tokens_A[i] = layershift(tokens_A[i], i, snac_config.padded_vocab_size, shift)
             model_input_ids[i].append(tokens_A[i].clone().to(device).to(torch.int32))
-            model_input_ids[i].append(
-                torch.tensor([layershift(snac_config.end_of_audio, i)], device=device)
-            )
+            model_input_ids[i].append(torch.tensor([layershift(snac_config.end_of_audio, i, snac_config.padded_vocab_size, shift)], device=device))
             model_input_ids[i] = torch.stack(model_input_ids[i])
 
-        model_input_ids[-1].append(token_T.clone().to(torch.int32))
+        # model_input_ids[-1].append(token_T.clone().to(torch.int32))
+        model_input_ids[-1].append(torch.tensor([pad_id_t], device=token_T.device))
         model_input_ids[-1].append(token_T.clone().to(torch.int32))
         model_input_ids[-1] = torch.stack(model_input_ids[-1])
 
