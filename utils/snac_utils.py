@@ -51,7 +51,12 @@ def reconscruct_snac(output_list):
     for i in range(len(output_list[-1])):
         output.append("#")
         for j in range(7):
-            output.append(output_list[j][i])
+            cur_token = output_list[j][i]
+            if cur_token < SnacConfig.audio_vocab_size:
+                output.append(cur_token)
+            else:
+                print(f"cur_token {cur_token} oob!!!")
+                output.append(0)
     return output
 
 

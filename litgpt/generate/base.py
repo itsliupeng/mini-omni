@@ -383,7 +383,6 @@ def generate_TA_BATCH(
     for i in range(7):
         list_output[i].append(tokens_A[i].tolist()[0])
     list_output[7].append(token_T.tolist()[0])
-    # list_output[7].append(pad_id_t)
 
     model_input_ids = [[] for i in range(8)]
     for i in range(7):
@@ -392,8 +391,8 @@ def generate_TA_BATCH(
         model_input_ids[i].append(torch.tensor([layershift(snac_config.end_of_audio, i, snac_config.padded_vocab_size, shift)], device=device))
         model_input_ids[i] = torch.stack(model_input_ids[i])
 
-    # model_input_ids[-1].append(token_T.clone().to(torch.int32))
-    model_input_ids[-1].append(torch.tensor([pad_id_t], device=token_T.device))
+    model_input_ids[-1].append(token_T.clone().to(torch.int32))
+    # model_input_ids[-1].append(torch.tensor([pad_id_t], device=token_T.device))
     model_input_ids[-1].append(token_T.clone().to(torch.int32))
     model_input_ids[-1] = torch.stack(model_input_ids[-1])
 
@@ -425,7 +424,6 @@ def generate_TA_BATCH(
         for i in range(7):
             list_output[i].append(tokens_A[i].tolist()[0])
         list_output[7].append(token_T.tolist()[0])
-        # list_output[7].append(pad_id_t)
 
         model_input_ids = [[] for i in range(8)]
         for i in range(7):
@@ -434,8 +432,8 @@ def generate_TA_BATCH(
             model_input_ids[i].append(torch.tensor([layershift(snac_config.end_of_audio, i, snac_config.padded_vocab_size, shift)], device=device))
             model_input_ids[i] = torch.stack(model_input_ids[i])
 
-        # model_input_ids[-1].append(token_T.clone().to(torch.int32))
-        model_input_ids[-1].append(torch.tensor([pad_id_t], device=token_T.device))
+        model_input_ids[-1].append(token_T.clone().to(torch.int32))
+        # model_input_ids[-1].append(torch.tensor([pad_id_t], device=token_T.device))
         model_input_ids[-1].append(token_T.clone().to(torch.int32))
         model_input_ids[-1] = torch.stack(model_input_ids[-1])
 
@@ -622,7 +620,7 @@ def generate_TA(
 
     input_pos = torch.tensor([T], device=device)
     text_end = False
-    for _ in tqdm(range(2, max_returned_tokens - T + 1)):
+    for i in tqdm(range(2, max_returned_tokens - T + 1)):
 
         model_input_ids = []
         for i in range(7):
@@ -634,7 +632,7 @@ def generate_TA(
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
 
-        tokens_A, token_T = next_token_A1T2(
+        tokens_A, token_T, past_key_values = next_token_A1T2(
             model,
             None,
             model_input_ids,

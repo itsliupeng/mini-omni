@@ -45,12 +45,14 @@ _pad_t = text_vocabsize + 1
 _input_t = text_vocabsize + 2
 _answer_t = text_vocabsize + 3
 _asr = text_vocabsize + 4
+_tts_t = text_vocabsize + 5
 
 _eoa = audio_vocabsize
 _pad_a = audio_vocabsize + 1
 _input_a = audio_vocabsize + 2
 _answer_a = audio_vocabsize + 3
 _split = audio_vocabsize + 4
+_tts = audio_vocabsize + 5
 
 
 
@@ -70,6 +72,15 @@ def get_input_ids_TA(text, text_tokenizer):
     input_ids_item[-1] = torch.tensor(input_ids_item[-1]).unsqueeze(0)
     return input_ids_item
 
+def get_input_ids_TTS(text, text_tokenizer):
+    input_ids_item = [[] for _ in range(8)]
+    text_tokens = text_tokenizer.encode(text)
+    for i in range(7):
+        input_ids_item[i] = [layershift(_input_a, i)] + [layershift(_pad_a, i)] * len(text_tokens) + [layershift(_eoa, i), layershift(_tts, i)]
+        input_ids_item[i] = torch.tensor(input_ids_item[i]).unsqueeze(0)
+    input_ids_item[-1] = [_input_t] + text_tokens.tolist() + [_eot] + [_tts_t]
+    input_ids_item[-1] = torch.tensor(input_ids_item[-1]).unsqueeze(0)
+    return input_ids_item
 
 def get_input_ids_TT(text, text_tokenizer):
     input_ids_item = [[] for i in range(8)]
@@ -130,10 +141,10 @@ def get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device):
         input_ids_item += [layershift(_pad_a, i)] * T
         input_ids_item += [(layershift(_eoa, i)), layershift(_answer_a, i)]
         input_ids_AA.append(torch.tensor(input_ids_item))
-    input_id_T = torch.tensor([_input_t] + [_pad_t] * T + [_eot, _pad_t])
+    input_id_T = torch.tensor([_input_t] + [_pad_t] * T + [_eot, _answer_t])
     input_ids_AA.append(input_id_T)
 
-    input_ids_AT = []
+    input_ids_AT = [] 
     for i in range(7):
         input_ids_item = []
         input_ids_item.append(layershift(_input_a, i))
@@ -299,8 +310,8 @@ def A1_T1(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
 
 def T1_A2(fabric, input_ids, model, text_tokenizer, step,
           snacmodel, out_dir=None):
-    with fabric.init_tensor():
-        model.set_kv_cache(batch_size=1)
+    # with fabric.init_tensor():
+    #     model.set_kv_cache(batch_size=1)
     tokenlist = generate_TA(
         model,
         None,
@@ -316,6 +327,7 @@ def T1_A2(fabric, input_ids, model, text_tokenizer, step,
         shift=padded_text_vocabsize,
         include_prompt=True,
         generate_text=True,
+        layershift_shift=padded_text_vocabsize,
     )
 
     audiolist = reconscruct_snac(tokenlist)
@@ -338,7 +350,7 @@ def T1_A2(fabric, input_ids, model, text_tokenizer, step,
         audio_hat.squeeze().cpu().numpy(),
         24000,
     )
-    model.clear_kv_cache()
+    # model.clear_kv_cache()
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
 
@@ -548,8 +560,24 @@ def test_infer():
     # AA AT
     # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_amode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0008000_hf"
     # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_amode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0024000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0032000_hf"
-    
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0032000_hf" #
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_onlyATT_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0032000_hf" #
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_from_scratch/checkpoint/iter_0060000_hf" # 20241104_071400
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_aatmode_t_proj_llm_extra_cg4_d1030_A/checkpoint/iter_0038000_hf" # 20241104_080525
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0052000_hf" # 20241104_084504
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_ATA/checkpoint/iter_0018000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_onlyATA/checkpoint/iter_0040000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_onlyATA/checkpoint/iter_0086000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_ATA/checkpoint/iter_0080000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_16m_bs512_tts_ta8_quora/checkpoint/iter_0066000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_2m_bs2k_tts_ta0/checkpoint/iter_0010000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_2m_bs2k_tts_ta0/checkpoint/iter_0004000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_4m_bs2k_tts_ta8_quora_fllm/checkpoint/iter_0043000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_4m_bs2k_tts_ta8_quora_tloss/checkpoint/iter_0002000_hf"
+
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_4m_bs2k_tts8_f_d1204_freezellm_trainextrawe_librilight/checkpoint/iter_0000600_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_4m_bs2k_tts8_f_d1204_freezellm_trainextrawe/checkpoint/iter_0001000_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_trainextrawe_librilight_quora_zhihu/checkpoint/iter_0009000_hf"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
@@ -558,7 +586,11 @@ def test_infer():
     fabric, model, text_tokenizer, snacmodel, whispermodel = load_model(ckpt_dir, device)
 
     # task = ['A1A2', 'asr', "T1A2", "AA-BATCH", 'T1T2', 'AT']
-    task = ["AA-BATCH"]
+    # task = ["AA-BATCH"]
+    # task = ["AT"]
+    # task = ["A1A2"]
+    # task = ['T1A2']
+    task = ["tts"]
     print(f"task: {task}")
     # task = ["A1A2"]
 
@@ -589,6 +621,16 @@ def test_infer():
         "Nope"
     ]
 
+    tts_text_list = [
+        "Take along one sheet of paper from the hospital or doctor to prove you are not scamming. Good luck to you; you have a tough row to hoe, but it will be worth it.",
+        "Your mum is doing for you what she thinks is best.Unfortunately, like all parents, it's hard when to know you stop and your child begins.As you get older you will change regardless and she will feel she has lost control.Comfort her by saying you will never leave, your heart is always with her wherever you go.That God has chosen your life and it's not the same as what she thinks.That what works for her, doesn't work for everyone else, as everyone is different.Reassure her she is doing a great job."
+        "Map out your hours!Everyone is given the same twenty four hours in a day but the key to not getting burnt out is to plan ahead.Make rough to do lists for the day and goals for the week",
+        "As a student, i know it's very difficult to balance personal or social life with studies as ca is a very long journey with vast syllabus. The quantum of syllabus makes us dull to enjoy other things in life.Like everytime you get a chance to enjoy, you always think about completion of syllabus and time is very limited but that make us monotonous. Monotonous work make us inefficient and inefficiency limits our scope of achieving targets and when the targets not get finished, we start doubting self.",
+        "面试、重大场合的时候,让自己闪亮一下,又何乐而不为呢。这比长高可简单多了。不化妆的女生其实也很美。自然清纯,悠然自得有些女生化妆反而会显得老态,难以保持清纯的样子,不化妆显得更自然,更美。不化妆不代表不对皮肤进行护理,化妆对皮肤的负担很重",
+        "之前由于院系大调整从浙大拆了出去,这些高校从弱小到壮大,浙江大学后来又将这些合并成一个巨无霸高校,就有人调侃是其是坐享其成。吐槽点:各种各样武汉大学和某些明星一样,天生招黑体质,不管做什么都有人黑。至于原因,有的说它是发展太快"
+    ]
+
+
     # LOAD MODEL
     with torch.no_grad():
         if "A1A2" in task:
@@ -603,7 +645,7 @@ def test_infer():
                     mel, leng = load_audio(path)
                     audio_feature, input_ids = get_input_ids_whisper(
                         mel, leng, whispermodel, device, 
-                        special_token_a=_answer_a, special_token_t=_pad_t
+                        special_token_a=_answer_a, special_token_t=_answer_t
                     )
                     text = A1_A2(
                         fabric,
@@ -645,6 +687,23 @@ def test_infer():
                 print(f"asr output: {output}")
                 print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
                 index += 1
+
+        if "tts" in task:
+            step = 0
+            print("\n")
+            print("===============================================================")
+            print("                       testing T1A2")
+            print("===============================================================")
+            for idx, text in enumerate(tts_text_list):
+                input_ids = get_input_ids_TTS(text, text_tokenizer)
+                text_output = T1_A2(fabric, input_ids, model, text_tokenizer, step,
+                                    snacmodel, out_dir=out_dir)
+                print(f"-------- idx: {idx} ---------")
+                print(f"input: {text}")
+                print(f"output: {text_output}")
+                print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+                step += 1
+            print("===============================================================")
 
         if "T1A2" in task:
             step = 0
@@ -702,13 +761,14 @@ def test_infer():
             print("                       testing A1A2-BATCH")
             print("===============================================================")
             step = 0
-            for path in test_audio_list:
+            for idx, path in enumerate(test_audio_list):
                 mel, leng = load_audio(path)
                 audio_feature, input_ids = get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device)
                 text = A1_A2_batch(
                     fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
                     snacmodel, out_dir=out_dir
                 )
+                print(f"idx: {idx}")
                 print(f"input: {test_audio_transcripts[step]}")
                 print(f"output: {text}")
                 step += 1
