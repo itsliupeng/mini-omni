@@ -22,6 +22,15 @@
             "env": {"CUDA_LAUNCH_BLOCKING": "1", "TORCH_USE_CUDA_DSA": "1"}
         },
         {
+            "name": "infer_moshi",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "inference_yi_moshi.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {"CUDA_LAUNCH_BLOCKING": "1", "TORCH_USE_CUDA_DSA": "1"}
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",

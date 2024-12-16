@@ -21,20 +21,21 @@ from litgpt.model import GPT, Config
 from lightning.fabric.utilities.load import _lazy_load as lazy_load
 from utils.snac_utils import reconscruct_snac, reconstruct_tensors, get_time_str
 from utils.snac_utils import get_snac, generate_audio_data
-import whisper
 from tqdm import tqdm
 from huggingface_hub import snapshot_download
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import whisper
+
+from moshi.models import loaders
 
 torch.set_printoptions(sci_mode=False)
-
 
 
 # TODO
 text_vocabsize = 64000
 text_specialtokens = 64
-audio_vocabsize = 4096
+audio_vocabsize = 2048
 audio_specialtokens = 64
 
 padded_text_vocabsize = text_vocabsize + text_specialtokens
@@ -94,8 +95,8 @@ def get_input_ids_TT(text, text_tokenizer):
     return input_ids_item
 
 
-def get_input_ids_whisper(
-    mel, leng, whispermodel, device, 
+def get_input_ids_mimi(
+    audio_wav, mimi_model, device, 
     special_token_a=_answer_a, special_token_t=_answer_t, text=None, text_tokenizer=None
 ):
 
@@ -105,14 +106,12 @@ def get_input_ids_whisper(
         text_tokens = None
     
     with torch.no_grad():
-        mel = mel.unsqueeze(0).to(device)
-        # audio_feature = whisper.decode(whispermodel,mel, options).audio_features
-        # audio_feature = whispermodel.encoder(mel)[0][:leng]
-        audio_feature = whispermodel.encoder(mel)[0][:leng]
+        audio_wav = torch.from_numpy(audio_wav).unsqueeze(0).unsqueeze(0).to(device)
+        audio_tokens = mimi_model.encode(audio_wav)[0]
 
-    T = audio_feature.size(0)
+    T = audio_tokens.size(-1)
     input_ids = []
-    for i in range(7):
+    for i in range(8):
         input_ids_item = []
         input_ids_item.append(layershift(_input_a, i))
         input_ids_item += [layershift(_pad_a, i)] * T
@@ -125,7 +124,7 @@ def get_input_ids_whisper(
     else:
         input_id_T = torch.tensor([_input_t] + [_pad_t] * T + [_eot, special_token_t])
     input_ids.append(input_id_T.unsqueeze(0))
-    return audio_feature.unsqueeze(0), input_ids
+    return input_ids
 
 
 def get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device):
@@ -165,10 +164,7 @@ def get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device):
 
 def load_audio(path):
     audio = whisper.load_audio(path)
-    duration_ms = (len(audio) / 16000) * 1000
-    audio = whisper.pad_or_trim(audio)
-    mel = whisper.log_mel_spectrogram(audio)
-    return mel, int(duration_ms / 20) + 1
+    return audio
 
 
 def A1_A2_batch(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
@@ -238,13 +234,13 @@ def A1_T2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
 
-def A1_A2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
+def A1_A2(fabric, input_ids, leng, model, text_tokenizer, step,
           snacmodel, out_dir=None):
     # with fabric.init_tensor():
     #     model.set_kv_cache(batch_size=1)
     tokenlist = generate_AA(
         model,
-        audio_feature,
+        None,
         input_ids,
         [leng],
         ["A1T2"],
@@ -379,14 +375,12 @@ def T1_T2(fabric, input_ids, model, text_tokenizer, step):
 
     
 def load_model(ckpt_dir, device):
-    snacmodel = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval().to(device)
-    whispermodel = whisper.load_model("medium").to(device)
-    text_tokenizer = Tokenizer("/lp/models/Yi-6B")
-    # fabric = L.Fabric(devices=1, strategy="auto")
-    # config = Config.from_file(ckpt_dir + "/model_config.yaml")
-    # config.post_adapter = False
+    mimi_weight = "/lp/models/moshiko-pytorch-bf16/tokenizer-e351c8d8-checkpoint125.safetensors"
+    mimi = loaders.get_mimi(mimi_weight, device='cuda')
+    mimi.set_num_codebooks(8)  
 
-    # with fabric.init_module(empty_init=False):
+    text_tokenizer = Tokenizer("/lp/models/Yi-6B")
+
     if True:
         model = AutoModelForCausalLM.from_pretrained(
             ckpt_dir,
@@ -396,204 +390,21 @@ def load_model(ckpt_dir, device):
         )
         print(f"load model from ckpt_dir {ckpt_dir}")
 
-    # model = fabric.setup(model)
-    # state_dict = lazy_load(ckpt_dir + "/lit_model.pth")
-    # model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
 
-    # return None, model, text_tokenizer, snacmodel, model.audio_model
-    return None, model, text_tokenizer, snacmodel, whispermodel
-
-
-    
-def download_model(ckpt_dir):
-    repo_id = "gpt-omni/mini-omni"
-    snapshot_download(repo_id, local_dir=ckpt_dir, revision="main")
-
-    
-class OmniInference:
-
-    def __init__(self, ckpt_dir='./checkpoint', device='cuda:0'):
-        self.device = device
-        if not os.path.exists(ckpt_dir):
-            print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
-            download_model(ckpt_dir)
-        self.fabric, self.model, self.text_tokenizer, self.snacmodel, self.whispermodel = load_model(ckpt_dir, device)
-
-    def warm_up(self, sample='./data/samples/output1.wav'):
-        for _ in self.run_AT_batch_stream(sample):
-            pass
-
-    @torch.inference_mode()
-    def run_AT_batch_stream(self, 
-                            audio_path, 
-                            stream_stride=4,
-                            max_returned_tokens=2048, 
-                            temperature=0.9, 
-                            top_k=1, 
-                            top_p=1.0,
-                            eos_id_a=_eoa,
-                            eos_id_t=_eot,
-        ):
-
-        assert os.path.exists(audio_path), f"audio file {audio_path} not found"
-        model = self.model
-
-        with self.fabric.init_tensor():
-            model.set_kv_cache(batch_size=2)
-
-        mel, leng = load_audio(audio_path)
-        audio_feature, input_ids = get_input_ids_whisper_ATBatch(mel, leng, self.whispermodel, self.device)
-        T = input_ids[0].size(1)
-        device = input_ids[0].device
-
-        assert max_returned_tokens > T, f"max_returned_tokens {max_returned_tokens} should be greater than audio length {T}"
-
-        if model.max_seq_length < max_returned_tokens - 1:
-            raise NotImplementedError(
-                f"max_seq_length {model.max_seq_length} needs to be >= {max_returned_tokens - 1}"
-            )
-
-        input_pos = torch.tensor([T], device=device)
-        list_output = [[] for i in range(8)]
-        tokens_A, token_T = next_token_batch(
-            model,
-            audio_feature.to(torch.float32).to(model.device),
-            input_ids,
-            [T - 3, T - 3],
-            ["A1T2", "A1T2"],
-            input_pos=torch.arange(0, T, device=device),
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-        )
-
-        for i in range(7):
-            list_output[i].append(tokens_A[i].tolist()[0])
-        list_output[7].append(token_T.tolist()[0])
-
-        model_input_ids = [[] for i in range(8)]
-        for i in range(7):
-            tokens_A[i] = tokens_A[i].clone() + padded_text_vocabsize + i * padded_audio_vocabsize
-            model_input_ids[i].append(tokens_A[i].clone().to(device).to(torch.int32))
-            model_input_ids[i].append(torch.tensor([layershift(4097, i)], device=device))
-            model_input_ids[i] = torch.stack(model_input_ids[i])
-
-        model_input_ids[-1].append(token_T.clone().to(torch.int32))
-        model_input_ids[-1].append(token_T.clone().to(torch.int32))
-        model_input_ids[-1] = torch.stack(model_input_ids[-1])
-
-        text_end = False
-        index = 1
-        nums_generate = stream_stride
-        begin_generate = False
-        current_index = 0
-        for _ in tqdm(range(2, max_returned_tokens - T + 1)):
-            tokens_A, token_T = next_token_batch(
-                model,
-                None,
-                model_input_ids,
-                None,
-                None,
-                input_pos=input_pos,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-            )
-
-            if text_end:
-                token_T = torch.tensor([_pad_t], device=device)
-
-            if tokens_A[-1] == eos_id_a:
-                break
-
-            if token_T == eos_id_t:
-                text_end = True
-
-            for i in range(7):
-                list_output[i].append(tokens_A[i].tolist()[0])
-            list_output[7].append(token_T.tolist()[0])
-
-            model_input_ids = [[] for i in range(8)]
-            for i in range(7):
-                tokens_A[i] = tokens_A[i].clone() +padded_text_vocabsize + i * padded_audio_vocabsize
-                model_input_ids[i].append(tokens_A[i].clone().to(device).to(torch.int32))
-                model_input_ids[i].append(
-                    torch.tensor([layershift(4097, i)], device=device)
-                )
-                model_input_ids[i] = torch.stack(model_input_ids[i])
-
-            model_input_ids[-1].append(token_T.clone().to(torch.int32))
-            model_input_ids[-1].append(token_T.clone().to(torch.int32))
-            model_input_ids[-1] = torch.stack(model_input_ids[-1])
-
-            if index == 7:
-                begin_generate = True
-
-            if begin_generate:
-                current_index += 1
-                if current_index == nums_generate:
-                    current_index = 0
-                    # import ipdb; ipdb.set_trace()
-                    snac = get_snac(list_output, index, nums_generate)
-                    audio_stream = generate_audio_data(snac, self.snacmodel, self.device)
-                    yield audio_stream
-
-            input_pos = input_pos.add_(1)
-            index += 1
-        text = self.text_tokenizer.decode(torch.tensor(list_output[-1]))
-        print(f"text output: {text}")
-        model.clear_kv_cache()
-        return list_output
+    return None, model, text_tokenizer, mimi
 
 
 def test_infer():
     device = "cuda:0"
     out_dir = f"./output/{get_time_str()}"
-    # ckpt_dir = f"/lp/models/mini-omni"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio/yi_6b_4m_bs1024_load_wm_freeze_llm_extra_d1021/checkpoint/iter_0002400_hf"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio/yi_6b_4m_bs1024_load_wm_freeze_llm_extra_d1021/checkpoint/iter_0003200_hf"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio/yi_6b_4m_bs1024_load_wm_freeze_llm_extra_d1021/checkpoint/iter_0003200_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio/yi_6b_8m_bs1024_load_wm_asr_fix/checkpoint/iter_0010554_hf_B"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio/yi_6b_4m_bs1024_load_wm_asr_pool_d1026_shuffle_size/checkpoint/iter_0010554_hf_pool"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio/yi_6b_8m_bs1024_load_wm_asr_pool_d1026_shuffle_size_A_sr/checkpoint/iter_0010554_hf_pool"
-    
-    # AA AT
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_amode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0008000_hf"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_amode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0024000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0032000_hf" #
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_onlyATT_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0032000_hf" #
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_from_scratch/checkpoint/iter_0060000_hf" # 20241104_071400
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_4m_bs512_aatmode_t_proj_llm_extra_cg4_d1030_A/checkpoint/iter_0038000_hf" # 20241104_080525
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030/checkpoint/iter_0052000_hf" # 20241104_084504
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_ATA/checkpoint/iter_0018000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_onlyATA/checkpoint/iter_0040000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_onlyATA/checkpoint/iter_0086000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_8m_bs512_4aatmode_t_proj_llm_extra_cg4_d1030_C_ATA/checkpoint/iter_0080000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_16m_bs512_tts_ta8_quora/checkpoint/iter_0066000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_2m_bs2k_tts_ta0/checkpoint/iter_0010000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_2m_bs2k_tts_ta0/checkpoint/iter_0004000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_4m_bs2k_tts_ta8_quora_fllm/checkpoint/iter_0043000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_4m_bs2k_tts_ta8_quora_tloss/checkpoint/iter_0002000_hf"
-
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_trainextrawe_librilight_quora_zhihu/checkpoint/iter_0017000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_fllm_librilight_quora_zhihu/checkpoint/iter_0008000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_trainextrawe_librilight_quora_zhihu_f/checkpoint/iter_0026000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_fllm_librilight_quora_zhihu_f/checkpoint/iter_0023000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_d1204_fllmall_librilight_quora_zhihu/checkpoint/iter_0027000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_trainextrawe_librilight_quora_zhihu_f/checkpoint/iter_0050000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_d1204_fllmall_librilight_quora_zhihu_C/checkpoint/iter_0085000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_trainextrawe_librilight_quora_zhihu_f/checkpoint/iter_0088000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_d1204_fllmall_zhihu_f/checkpoint/iter_0070000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_fllm_librilight_quora_zhihu_f/checkpoint/iter_0120000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_d1204_fllmall_librilight_quora_zhihu_C/checkpoint/iter_0140000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_train/checkpoint/iter_0015000_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0012000_hf_A"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
     #     download_model(ckpt_dir)
 
-    fabric, model, text_tokenizer, snacmodel, whispermodel = load_model(ckpt_dir, device)
+    fabric, model, text_tokenizer, mimi_model = load_model(ckpt_dir, device)
 
     # task = ['A1A2', 'asr', "T1A2", "AA-BATCH", 'T1T2', 'AT']
     # task = ["AA-BATCH"]
@@ -655,20 +466,20 @@ def test_infer():
                 # if idx < 1:
                 #     continue
                 try:
-                    mel, leng = load_audio(path)
-                    audio_feature, input_ids = get_input_ids_whisper(
-                        mel, leng, whispermodel, device, 
+                    audio_wav = load_audio(path)
+                    input_ids = get_input_ids_mimi(
+                        audio_wav, mimi_model, device, 
                         special_token_a=_answer_a, special_token_t=_answer_t
                     )
+                    leng = input_ids[0].size(-1)
                     text = A1_A2(
                         fabric,
-                        audio_feature,
                         input_ids,
                         leng,
                         model,
                         text_tokenizer,
                         step,
-                        snacmodel,
+                        mimi_model,
                         out_dir=out_dir,
                     )
                 

@@ -620,7 +620,8 @@ def generate_TA(
 
     input_pos = torch.tensor([T], device=device)
     text_end = False
-    for i in tqdm(range(2, max_returned_tokens - T + 1)):
+    text_end_idx = -1
+    for j in tqdm(range(2, max_returned_tokens - T + 1)):
 
         model_input_ids = []
         for i in range(7):
@@ -645,20 +646,24 @@ def generate_TA(
             past_key_values=past_key_values
         )
 
-        if text_end:
-            token_T = torch.tensor([pad_id_t], device=device)
+        # if text_end:
+        #     token_T = torch.tensor([pad_id_t], device=device)
 
         if tokens_A[-1] == eos_id_a:
             break
 
-        if token_T == eos_id_t:
+        if not text_end and token_T == eos_id_t:
             text_end = True
+            text_end_idx = j
 
         for i in range(7):
             output[i].append(tokens_A[i].clone().tolist()[0])
         output[7].append(token_T.clone().tolist()[0])
         input_pos = input_pos.add_(1)
 
+    if text_end_idx > 0:
+        for i in range(text_end_idx, len(output[7])):
+            output[7][i] = pad_id_t
     return output
 
 
@@ -689,7 +694,7 @@ def generate_AA(
     output = [[] for _ in range(8)]
     tokens_A, token_T, past_key_values = next_token_A1T2(
         model,
-        audio_features.to(torch.float32).to(model.device),
+        audio_features.to(torch.float32).to(model.device) if audio_features else audio_features,
         input_ids,
         [T - 3],
         ["A1T2"],
