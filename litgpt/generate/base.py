@@ -10,7 +10,6 @@ from litgpt.model import GPT
 from utils.snac_utils import layershift, snac_config
 from tqdm import tqdm
 
-
 def multinomial_num_samples_1(probs: torch.Tensor) -> torch.Tensor:
     if torch._dynamo.is_compiling():
         # Faster alternative to `torch.multinomial(probs, num_samples=1)` that is also CUDAGraph friendly
@@ -104,15 +103,20 @@ def next_token_A1T2(
     task: list,
     input_pos: torch.Tensor,
     past_key_values=None,
+    moshi_infer=False,
     **kwargs: Any,
 ) -> torch.Tensor:
     input_pos = input_pos.to(model.device).unsqueeze(0)
     input_ids = [input_id.to(model.device) for input_id in input_ids]
     model.eval()
     with torch.no_grad():
-        logits_a, logit_t, past_key_values = model(
-            audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task, past_key_values=past_key_values
-        )
+        if not moshi_infer:
+            logits_a, logit_t, past_key_values = model(
+                audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task, past_key_values=past_key_values
+            )
+        else:
+            input_ids = torch.cat(input_ids, 0).unsqueeze(0) # [9, S]
+            logits_a, logit_t, past_key_values = model(input_ids, input_pos, past_key_values=past_key_values)
 
     next_audio_tokens = []
     for logit_a in logits_a:
@@ -685,16 +689,19 @@ def generate_AA(
     shift: Optional[int] = None,
     include_prompt: bool = True,
     generate_text=False,
-    layershift_shift=152000
+    layershift_shift=152000,
+    layershift_stride=4096+64,
+    moshi_infer=False,
+    num_codebooks=7
 ) -> torch.Tensor:
 
     T = input_ids[0].size(1)
     device = input_ids[0].device
 
-    output = [[] for _ in range(8)]
+    output = [[] for _ in range(num_codebooks+1)]
     tokens_A, token_T, past_key_values = next_token_A1T2(
         model,
-        audio_features.to(torch.float32).to(model.device) if audio_features else audio_features,
+        audio_features.to(torch.float32).to(model.device) if audio_features is not None else None,
         input_ids,
         [T - 3],
         ["A1T2"],
@@ -702,10 +709,11 @@ def generate_AA(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
+        moshi_infer=moshi_infer
     )
-    for i in range(7):
+    for i in range(num_codebooks):
         output[i].append(tokens_A[i].clone().tolist()[0])
-    output[7].append(token_T.clone().tolist()[0])
+    output[num_codebooks].append(token_T.clone().tolist()[0])
 
     input_pos = torch.tensor([T], device=device)
 
@@ -713,9 +721,9 @@ def generate_AA(
     for _ in tqdm(range(2, max_returned_tokens - T + 1)):
 
         model_input_ids = []
-        for i in range(7):
+        for i in range(num_codebooks):
             model_input_ids.append(
-                layershift(tokens_A[i].clone(), i, shift=layershift_shift)
+                layershift(tokens_A[i].clone(), i, stride=layershift_stride, shift=layershift_shift)
                 .view(1, -1)
                 .to(torch.int32)
                 .to(device)
@@ -732,7 +740,8 @@ def generate_AA(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
-            past_key_values=past_key_values
+            past_key_values=past_key_values,
+            moshi_infer=moshi_infer
         )
 
         if text_end:
@@ -744,9 +753,9 @@ def generate_AA(
             # print("text_end")
             text_end = True
 
-        for i in range(7):
+        for i in range(num_codebooks):
             output[i].append(tokens_A[i].clone().tolist()[0])
-        output[7].append(token_T.clone().tolist()[0])
+        output[num_codebooks].append(token_T.clone().tolist()[0])
         input_pos = input_pos.add_(1)
 
     return output

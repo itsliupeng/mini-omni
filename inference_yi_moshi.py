@@ -31,6 +31,7 @@ from moshi.models import loaders
 
 torch.set_printoptions(sci_mode=False)
 
+NUM_CODEBOOKS = 8
 
 # TODO
 text_vocabsize = 64000
@@ -96,7 +97,7 @@ def get_input_ids_TT(text, text_tokenizer):
 
 
 def get_input_ids_mimi(
-    audio_wav, mimi_model, device, 
+    audio_wav, mimi_model, device, latency_list,
     special_token_a=_answer_a, special_token_t=_answer_t, text=None, text_tokenizer=None
 ):
 
@@ -114,15 +115,15 @@ def get_input_ids_mimi(
     for i in range(8):
         input_ids_item = []
         input_ids_item.append(layershift(_input_a, i))
-        input_ids_item += [layershift(_pad_a, i)] * T
-        input_ids_item += [(layershift(_eoa, i)), layershift(special_token_a, i)]
-        input_ids.append(torch.tensor(input_ids_item).unsqueeze(0))
+        input_ids_item +=  [layershift(_pad_a, i)] * latency_list[i] + [layershift(x, i) for x in audio_tokens[i]]
+        # input_ids_item += [(layershift(_eoa, i)), layershift(special_token_a, i)]
+        input_ids.append(torch.tensor(input_ids_item[:1+T]).unsqueeze(0))
     
     if text_tokens:
         assert len(text_tokens) <= T
-        input_id_T = torch.tensor([_input_t] +  text_tokens + [_pad_t] * (T-len(text_tokens)) + [_eot, special_token_t])
+        input_id_T = torch.tensor([_input_t] +  text_tokens + [_pad_t] * (T-len(text_tokens)-1) + [_input_t]) 
     else:
-        input_id_T = torch.tensor([_input_t] + [_pad_t] * T + [_eot, special_token_t])
+        input_id_T = torch.tensor([_input_t] + [_pad_t] * (T-1) + [_input_t])
     input_ids.append(input_id_T.unsqueeze(0))
     return input_ids
 
@@ -235,7 +236,7 @@ def A1_T2(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
 
 
 def A1_A2(fabric, input_ids, leng, model, text_tokenizer, step,
-          snacmodel, out_dir=None):
+          mimi_model, out_dir=None):
     # with fabric.init_tensor():
     #     model.set_kv_cache(batch_size=1)
     tokenlist = generate_AA(
@@ -254,9 +255,12 @@ def A1_A2(fabric, input_ids, leng, model, text_tokenizer, step,
         include_prompt=True,
         generate_text=True,
         layershift_shift=padded_text_vocabsize,
+        layershift_stride=padded_audio_vocabsize,
+        moshi_infer=True,
+        num_codebooks=NUM_CODEBOOKS
     )
     
-    audiolist = reconscruct_snac(tokenlist)
+    audiolist = tokenlist[:NUM_CODEBOOKS]
     tokenlist = tokenlist[-1]
     if text_vocabsize in tokenlist:
         tokenlist = tokenlist[: tokenlist.index(text_vocabsize)]
@@ -268,15 +272,20 @@ def A1_A2(fabric, input_ids, leng, model, text_tokenizer, step,
         os.makedirs(out_dir)
     if len(audiolist) == 0:
         return ""
-
-    audio = reconstruct_tensors(audiolist)
-    with torch.inference_mode():
-        audio_hat = snacmodel.decode(audio)
-    sf.write(
-        f"{out_dir}/{step:02d}.wav",
-        audio_hat.squeeze().cpu().numpy(),
-        24000,
-    )
+    
+    with torch.inference_mode(), mimi_model.streaming(1):
+        codecs = torch.tensor(audiolist).unsqueeze(0).cuda()
+        codecs = codecs[:, :, :-1]
+        codecs = torch.where(codecs >= 2048, torch.tensor(0), codecs)
+        if codecs.size(-1) == 0:
+            print("audio codecs is 0")  
+        else:
+            audio_hat = mimi_model.decode(codecs)
+            sf.write(
+                f"{out_dir}/{step:02d}.wav",
+                audio_hat.squeeze().cpu().numpy(),
+                24000,
+            )
     # model.clear_kv_cache()
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
@@ -378,6 +387,7 @@ def load_model(ckpt_dir, device):
     mimi_weight = "/lp/models/moshiko-pytorch-bf16/tokenizer-e351c8d8-checkpoint125.safetensors"
     mimi = loaders.get_mimi(mimi_weight, device='cuda')
     mimi.set_num_codebooks(8)  
+    mimi.cuda()
 
     text_tokenizer = Tokenizer("/lp/models/Yi-6B")
 
@@ -398,7 +408,10 @@ def load_model(ckpt_dir, device):
 def test_infer():
     device = "cuda:0"
     out_dir = f"./output/{get_time_str()}"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0012000_hf_A"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0012000_hf_A"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_mb2_tts8_fdecoder_librilight_quora_zhihu/checkpoint/iter_0022000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_mb2_tts8_fllmall_librilight_quora_zhihu/checkpoint/iter_0026000_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0019500_hf"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
@@ -454,6 +467,7 @@ def test_infer():
         "上周末，一篇 Google DeepMind 的论文引发了 AI 圈的关注。研究者引入了「苏格拉底式学习」，这是 AI 中递归自我完善的一种新方法。这种方法使系统能够自主增强其能力，超越初始训练数据的限制。通过利用结构化的「语言游戏」，该技术可以为实现通用人工智能提供了实用的路线图。",
     ]
 
+    latency_list = [0]+ [1] * 7
 
     # LOAD MODEL
     with torch.no_grad():
@@ -467,9 +481,11 @@ def test_infer():
                 #     continue
                 try:
                     audio_wav = load_audio(path)
+                    # input_ids = get_input_ids_mimi(
+                    #     audio_wav, mimi_model, device, latency_list, text=test_audio_transcripts[idx], text_tokenizer=text_tokenizer
+                    # )
                     input_ids = get_input_ids_mimi(
-                        audio_wav, mimi_model, device, 
-                        special_token_a=_answer_a, special_token_t=_answer_t
+                        audio_wav, mimi_model, device, latency_list, text=None, text_tokenizer=text_tokenizer
                     )
                     leng = input_ids[0].size(-1)
                     text = A1_A2(
