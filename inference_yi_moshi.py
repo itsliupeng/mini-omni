@@ -46,7 +46,7 @@ _eot = text_vocabsize
 _pad_t = text_vocabsize + 1
 _input_t = text_vocabsize + 2
 _answer_t = text_vocabsize + 3
-_asr = text_vocabsize + 4
+_asr_t = text_vocabsize + 4
 _tts_t = text_vocabsize + 5
 
 _eoa = audio_vocabsize
@@ -126,6 +126,29 @@ def get_input_ids_mimi(
         input_id_T = torch.tensor([_input_t] + [_pad_t] * (T-1) + [_input_t])
     input_ids.append(input_id_T.unsqueeze(0))
     return input_ids
+
+
+def get_input_ids_asr(
+    audio_wav, mimi_model, device, latency_list
+):
+    with torch.no_grad():
+        audio_wav = torch.from_numpy(audio_wav).unsqueeze(0).unsqueeze(0).to(device)
+        audio_tokens = mimi_model.encode(audio_wav)[0]
+
+    T = audio_tokens.size(-1)
+    input_ids = []
+    for i in range(8):
+        input_ids_item = []
+        input_ids_item.append(layershift(_input_a, i))
+        input_ids_item += [layershift(_pad_a, i)] * latency_list[i] + [layershift(x, i) for x in audio_tokens[i]] +  [layershift(_eoa, i)] + [layershift(_pad_a, i)] * (1-latency_list[i]) + [layershift(_asr_a, i)]
+        input_ids.append(torch.tensor(input_ids_item).unsqueeze(0))
+    
+
+    input_id_T = torch.tensor([_input_t] + [_pad_t] * (T+1)  + [_eot, _asr_t])
+
+    input_ids.append(input_id_T.unsqueeze(0))
+    return input_ids
+
 
 
 def get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device):
@@ -289,22 +312,25 @@ def A1_A2(fabric, input_ids, leng, model, text_tokenizer, step,
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
 
-def A1_T1(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
+def A1_T1(fabric, input_ids, model, text_tokenizer, step):
     # with fabric.init_tensor():
     #     model.set_kv_cache(batch_size=1)
     tokenlist = generate_ASR(
         model,
-        audio_feature,
+        None,
         input_ids,
-        [leng],
+        [0],
         ["A1T1"],
         max_returned_tokens=2048,
         temperature=0.9,
         top_k=1,
-        eos_id_a=_eoa,
+        eos_id_a=_pad_a,
         eos_id_t=_eot,
         pad_id_t=_pad_t,
-        shift=padded_text_vocabsize,
+        layershift_shift=padded_text_vocabsize,
+        layershift_stride=padded_audio_vocabsize,
+        moshi_infer=True,
+        num_codebooks=NUM_CODEBOOKS,
         include_prompt=True,
         generate_text=True,
     )
@@ -421,7 +447,8 @@ def test_infer():
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0019500_hf"
 
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0004000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0004000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0004000_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0003000_hf"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
@@ -434,7 +461,7 @@ def test_infer():
     # task = ["AT"]
     # task = ["A1A2"]
     # task = ['T1A2']
-    task = ["tts"]
+    task = ["asr"]
     print(f"task: {task}")
     # task = ["A1A2"]
 
@@ -528,10 +555,10 @@ def test_infer():
             index = 0
             step = 0
             for path in test_audio_list:
-                mel, leng = load_audio(path)
+                audio_wav = load_audio(path)
                 # audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device, special_token_a=_pad_a, special_token_t=_answer_t)
-                audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device, special_token_a=_pad_a, special_token_t=_asr)
-                output = A1_T1(fabric, audio_feature, input_ids ,leng, model, text_tokenizer, index).lower().replace(',','').replace('.','').replace('?','')
+                input_ids = get_input_ids_asr(audio_wav, mimi_model, device, latency_list)
+                output = A1_T1(fabric, input_ids, model, text_tokenizer, index).lower().replace(',','').replace('.','').replace('?','')
                 print(f"audio_path: {path}")
                 print(f"audio transcript: {test_audio_transcripts[index]}")
                 print(f"asr output: {output}")
@@ -626,8 +653,6 @@ def test_infer():
             print("===============================================================")
 
         print("*********************** test end *****************************")
-
-
 
 if __name__ == "__main__":
     test_infer()

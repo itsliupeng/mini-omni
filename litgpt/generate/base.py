@@ -134,14 +134,19 @@ def next_token_A1T1(
     task: list,
     input_pos: torch.Tensor,
     past_key_values=None,
+    moshi_infer=False,
     **kwargs: Any,
 ) -> torch.Tensor:
     input_pos = input_pos.to(model.device).unsqueeze(0)
     input_ids = [input_id.to(model.device) for input_id in input_ids]
     with torch.no_grad():
-        logits_a, logit_t, past_key_values = model(
-            audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task, past_key_values=past_key_values
-        )
+        if not moshi_infer:
+            logits_a, logit_t, past_key_values = model(
+                audio_features, input_ids, input_pos, whisper_lens=whisper_lens, task=task, past_key_values=past_key_values
+            )
+        else:
+            input_ids = torch.cat(input_ids, 0).unsqueeze(0) # [9, S]
+            logits_a, logit_t, past_key_values = model(input_ids, input_pos, past_key_values=past_key_values)
 
     next_audio_tokens = []
     for logit_a in logits_a:
@@ -784,6 +789,10 @@ def generate_ASR(
     shift: Optional[int] = None,
     include_prompt: bool = True,
     generate_text=False,
+    layershift_shift=None,
+    layershift_stride=None,
+    moshi_infer=False,
+    num_codebooks=7,
 ) -> torch.Tensor:
 
     T = input_ids[0].size(1)
@@ -791,7 +800,7 @@ def generate_ASR(
     output = []
     token_T, past_key_values = next_token_A1T1(
         model,
-        audio_features.to(torch.float32).to(model.device),
+        None,
         input_ids,
         [T - 3],
         ["asr"],
@@ -799,6 +808,7 @@ def generate_ASR(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
+        moshi_infer=moshi_infer
     )
     output.append(token_T.clone().tolist()[0])
     input_pos = torch.tensor([T], device=device)
@@ -807,7 +817,7 @@ def generate_ASR(
         model_input_ids = []
         for i in range(7):
             model_input_ids.append(
-                torch.tensor([layershift(snac_config.end_of_audio, i)])
+                torch.tensor([layershift(eos_id_a, i, stride=layershift_stride, shift=layershift_shift)])
                 .view(1, -1)
                 .to(torch.int32)
                 .to(device)
@@ -823,7 +833,8 @@ def generate_ASR(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
-            past_key_values=past_key_values
+            past_key_values=past_key_values,
+            moshi_infer=moshi_infer
         )
         if token_T == eos_id_t:
             break
