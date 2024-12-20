@@ -600,13 +600,16 @@ def generate_TA(
     shift: Optional[int] = None,
     include_prompt: bool = True,
     generate_text=False,
-    layershift_shift=152000
+    layershift_shift=152000,
+    layershift_stride=4096+64,
+    moshi_infer=False,
+    num_codebooks=7
 ) -> torch.Tensor:
 
     T = input_ids[0].size(1)
     device = input_ids[0].device
 
-    output = [[] for _ in range(8)]
+    output = [[] for _ in range(num_codebooks+1)]
     tokens_A, token_T, past_key_values = next_token_A1T2(
         model,
         None,
@@ -617,10 +620,11 @@ def generate_TA(
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
+        moshi_infer=moshi_infer
     )
-    for i in range(7):
+    for i in range(num_codebooks):
         output[i].append(tokens_A[i].clone().tolist()[0])
-    output[7].append(token_T.clone().tolist()[0])
+    output[-1].append(token_T.clone().tolist()[0])
 
     input_pos = torch.tensor([T], device=device)
     text_end = False
@@ -628,9 +632,9 @@ def generate_TA(
     for j in tqdm(range(2, max_returned_tokens - T + 1)):
 
         model_input_ids = []
-        for i in range(7):
+        for i in range(num_codebooks):
             model_input_ids.append(
-                layershift(tokens_A[i].clone(), i, shift=layershift_shift)
+                layershift(tokens_A[i].clone(), i, stride=layershift_stride, shift=layershift_shift)
                 .view(1, -1)
                 .to(torch.int32)
                 .to(device)
@@ -647,7 +651,8 @@ def generate_TA(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
-            past_key_values=past_key_values
+            past_key_values=past_key_values,
+            moshi_infer=moshi_infer
         )
 
         # if text_end:
@@ -660,14 +665,14 @@ def generate_TA(
             text_end = True
             text_end_idx = j
 
-        for i in range(7):
+        for i in range(num_codebooks):
             output[i].append(tokens_A[i].clone().tolist()[0])
-        output[7].append(token_T.clone().tolist()[0])
+        output[-1].append(token_T.clone().tolist()[0])
         input_pos = input_pos.add_(1)
 
     if text_end_idx > 0:
-        for i in range(text_end_idx, len(output[7])):
-            output[7][i] = pad_id_t
+        for i in range(text_end_idx, len(output[-1])):
+            output[-1][i] = pad_id_t
     return output
 
 

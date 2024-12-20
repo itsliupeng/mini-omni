@@ -53,8 +53,8 @@ _eoa = audio_vocabsize
 _pad_a = audio_vocabsize + 1
 _input_a = audio_vocabsize + 2
 _answer_a = audio_vocabsize + 3
-_split = audio_vocabsize + 4
-_tts = audio_vocabsize + 5
+_asr_a = audio_vocabsize + 4
+_tts_a = audio_vocabsize + 5
 
 
 
@@ -75,10 +75,10 @@ def get_input_ids_TA(text, text_tokenizer):
     return input_ids_item
 
 def get_input_ids_TTS(text, text_tokenizer):
-    input_ids_item = [[] for _ in range(8)]
+    input_ids_item = [[] for _ in range(NUM_CODEBOOKS+1)]
     text_tokens = text_tokenizer.encode(text)
-    for i in range(7):
-        input_ids_item[i] = [layershift(_input_a, i)] + [layershift(_pad_a, i)] * len(text_tokens) + [layershift(_eoa, i), layershift(_tts, i)]
+    for i in range(8):
+        input_ids_item[i] = [layershift(_input_a, i)] + [layershift(_pad_a, i)] * len(text_tokens) + [layershift(_eoa, i), layershift(_tts_a, i)]
         input_ids_item[i] = torch.tensor(input_ids_item[i]).unsqueeze(0)
     input_ids_item[-1] = [_input_t] + text_tokens.tolist() + [_eot] + [_tts_t]
     input_ids_item[-1] = torch.tensor(input_ids_item[-1]).unsqueeze(0)
@@ -257,7 +257,6 @@ def A1_A2(fabric, input_ids, leng, model, text_tokenizer, step,
         layershift_shift=padded_text_vocabsize,
         layershift_stride=padded_audio_vocabsize,
         moshi_infer=True,
-        num_codebooks=NUM_CODEBOOKS
     )
     
     audiolist = tokenlist[:NUM_CODEBOOKS]
@@ -314,7 +313,7 @@ def A1_T1(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step):
 
 
 def T1_A2(fabric, input_ids, model, text_tokenizer, step,
-          snacmodel, out_dir=None):
+          mimi_model, out_dir=None):
     # with fabric.init_tensor():
     #     model.set_kv_cache(batch_size=1)
     tokenlist = generate_TA(
@@ -333,14 +332,16 @@ def T1_A2(fabric, input_ids, model, text_tokenizer, step,
         include_prompt=True,
         generate_text=True,
         layershift_shift=padded_text_vocabsize,
+        layershift_stride=padded_audio_vocabsize,
+        moshi_infer=True,
+        num_codebooks=NUM_CODEBOOKS
     )
 
-    audiolist = reconscruct_snac(tokenlist)
+    audiolist = tokenlist[:NUM_CODEBOOKS]
     tokenlist = tokenlist[-1]
 
     if text_vocabsize in tokenlist:
         tokenlist = tokenlist[: tokenlist.index(text_vocabsize)]
-    audio = reconstruct_tensors(audiolist)
     if out_dir is None:
         out_dir = "./output/default/T1-A2"
     else:
@@ -348,13 +349,19 @@ def T1_A2(fabric, input_ids, model, text_tokenizer, step,
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
-    with torch.inference_mode():
-        audio_hat = snacmodel.decode(audio)
-    sf.write(
-        f"{out_dir}/{step:02d}.wav",
-        audio_hat.squeeze().cpu().numpy(),
-        24000,
-    )
+    with torch.inference_mode(), mimi_model.streaming(1):
+        codecs = torch.tensor(audiolist).unsqueeze(0).cuda()
+        codecs = codecs[:, :, :-1]
+        codecs = torch.where(codecs >= 2048, torch.tensor(0), codecs)
+        if codecs.size(-1) == 0:
+            print("audio codecs is 0")  
+        else:
+            audio_hat = mimi_model.decode(codecs)
+            sf.write(
+                f"{out_dir}/{step:02d}.wav",
+                audio_hat.squeeze().cpu().numpy(),
+                24000,
+            )
     # model.clear_kv_cache()
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
@@ -411,7 +418,10 @@ def test_infer():
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0012000_hf_A"
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_mb2_tts8_fdecoder_librilight_quora_zhihu/checkpoint/iter_0022000_hf"
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_mb2_tts8_fllmall_librilight_quora_zhihu/checkpoint/iter_0026000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0019500_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0019500_hf"
+
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0004000_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0004000_hf"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
@@ -422,9 +432,9 @@ def test_infer():
     # task = ['A1A2', 'asr', "T1A2", "AA-BATCH", 'T1T2', 'AT']
     # task = ["AA-BATCH"]
     # task = ["AT"]
-    task = ["A1A2"]
+    # task = ["A1A2"]
     # task = ['T1A2']
-    # task = ["tts"]
+    task = ["tts"]
     print(f"task: {task}")
     # task = ["A1A2"]
 
@@ -537,7 +547,7 @@ def test_infer():
             for idx, text in enumerate(tts_text_list):
                 input_ids = get_input_ids_TTS(text, text_tokenizer)
                 text_output = T1_A2(fabric, input_ids, model, text_tokenizer, step,
-                                    snacmodel, out_dir=out_dir)
+                                    mimi_model, out_dir=out_dir)
                 print(f"-------- idx: {idx} ---------")
                 print(f"input: {text}")
                 print(f"output: {text_output}")
