@@ -376,8 +376,10 @@ def T1_A2(fabric, input_ids, model, text_tokenizer, step,
         os.makedirs(out_dir)
 
     with torch.inference_mode(), mimi_model.streaming(1):
+        audiolist = [x[:-1] if idx == 0 else x[1:] for idx, x in enumerate(audiolist)]
         codecs = torch.tensor(audiolist).unsqueeze(0).cuda()
-        codecs = codecs[:, :, :-1]
+        # codecs = codecs[:, :, :-1]
+        print(f"audio codecs >= 2048, number: {torch.sum(codecs >= 2048).item()}") 
         codecs = torch.where(codecs >= 2048, torch.tensor(0), codecs)
         if codecs.size(-1) == 0:
             print("audio codecs is 0")  
@@ -448,7 +450,13 @@ def test_infer():
 
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0004000_hf"
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0004000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0003000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0003000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0001000"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0001000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0007000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0004000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0008000_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0009500_hf"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
@@ -461,7 +469,8 @@ def test_infer():
     # task = ["AT"]
     # task = ["A1A2"]
     # task = ['T1A2']
-    task = ["asr"]
+    # task = ["asr", "tts"]
+    task = ["tts"]
     print(f"task: {task}")
     # task = ["A1A2"]
 

@@ -616,7 +616,7 @@ def generate_TA(
 
     output = [[] for _ in range(num_codebooks+1)]
     tokens_A, token_T, past_key_values = next_token_A1T2(
-        model,
+        model, 
         None,
         input_ids,
         None,
