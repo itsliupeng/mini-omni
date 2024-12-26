@@ -456,7 +456,13 @@ def test_infer():
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0007000_hf"
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0004000_hf"
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0008000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0009500_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0011000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0009500_hf"
+    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM-dev/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4_paudio/checkpoint/iter_0010000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4/checkpoint/iter_0011000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4/checkpoint/iter_0005000_hf"
+    ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM-dev/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4_paudio/checkpoint/iter_0074000_hf"
+    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM-dev/out/mimi_pretrain/yi6b_bs1k_tts8_asr4_librilight_quora_zhihu_yunting_spotify_asr_tts/checkpoint/iter_0020000_hf"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
@@ -470,7 +476,7 @@ def test_infer():
     # task = ["A1A2"]
     # task = ['T1A2']
     # task = ["asr", "tts"]
-    task = ["tts"]
+    task = ["asr", "tts"]
     print(f"task: {task}")
     # task = ["A1A2"]
 

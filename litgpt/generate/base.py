@@ -154,7 +154,7 @@ def next_token_A1T1(
         next_audio_tokens.append(next_a)
     next_t = sample(logit_t, **kwargs).to(dtype=input_ids[0].dtype)
     
-    return next_t, past_key_values
+    return next_audio_tokens, next_t, past_key_values
 
 
 def next_token_batch(
@@ -475,7 +475,7 @@ def generate_TT(
     device = input_ids[0].device
 
     output = []
-    token_T, past_key_values = next_token_A1T1(
+    next_audio_tokens, token_T, past_key_values = next_token_A1T1(
         model,
         None,
         input_ids,
@@ -501,7 +501,7 @@ def generate_TT(
             #     .to(device)
             # )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
-        token_T, past_key_values = next_token_A1T1(
+        next_audio_tokens, token_T, past_key_values = next_token_A1T1(
             model,
             None,
             model_input_ids,
@@ -544,7 +544,7 @@ def generate_AT(
     device = input_ids[0].device
 
     output = []
-    token_T, past_key_values = next_token_A1T1(
+    next_audio_tokens, token_T, past_key_values = next_token_A1T1(
         model,
         audio_features.to(torch.float32).to(model.device),
         input_ids,
@@ -568,7 +568,7 @@ def generate_AT(
                 .to(device)
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
-        token_T, past_key_values = next_token_A1T1(
+        next_audio_tokens, token_T, past_key_values = next_token_A1T1(
             model,
             None,
             model_input_ids,
@@ -798,7 +798,7 @@ def generate_ASR(
     T = input_ids[0].size(1)
     device = input_ids[0].device
     output = []
-    token_T, past_key_values = next_token_A1T1(
+    next_audio_tokens, token_T, past_key_values = next_token_A1T1(
         model,
         None,
         input_ids,
@@ -815,15 +815,16 @@ def generate_ASR(
     text_end = False
     for _ in tqdm(range(2, max_returned_tokens - T + 1)):
         model_input_ids = []
-        for i in range(7):
+        for i in range(num_codebooks):
             model_input_ids.append(
-                torch.tensor([layershift(eos_id_a, i, stride=layershift_stride, shift=layershift_shift)])
+                # torch.tensor([layershift(eos_id_a, i, stride=layershift_stride, shift=layershift_shift)])
+                torch.tensor([layershift(next_audio_tokens[i], i, stride=layershift_stride, shift=layershift_shift)])
                 .view(1, -1)
                 .to(torch.int32)
                 .to(device)
             )
         model_input_ids.append(token_T.clone().view(1, -1).to(torch.int32).to(device))
-        token_T, past_key_values = next_token_A1T1(
+        next_audio_tokens, token_T, past_key_values = next_token_A1T1(
             model,
             None,
             model_input_ids,

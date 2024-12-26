@@ -28,7 +28,7 @@
             "program": "inference_yi_moshi.py",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "env": {"CUDA_LAUNCH_BLOCKING": "1", "TORCH_USE_CUDA_DSA": "1"}
+            "env": {"CUDA_LAUNCH_BLOCKING": "1", "TORCH_USE_CUDA_DSA": "1", "CUDA_VISIBLE_DEVICES": "1"}
         },
         {
             "name": "Python Debugger: Current File",

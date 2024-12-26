@@ -12,8 +12,9 @@ API_URL = os.getenv("API_URL", None)
 client = None
 
 if API_URL is None:
-    from inference import OmniInference
-    omni_client = OmniInference('./checkpoint', 'cuda:0')
+    from inference_yi_omni import OmniInference
+    # omni_client = OmniInference('./checkpoint', 'cuda:0')
+    omni_client = OmniInference("/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_train/checkpoint/iter_0015000_hf", 'cuda:0')
     omni_client.warm_up()
 
 
@@ -50,7 +51,9 @@ def process_audio(audio):
                 except Exception as e:
                     print(f"error: {e}")
     else:
-        for chunk in omni_client.run_AT_batch_stream(filepath):
+        # for chunk in omni_client.run_AT_batch_stream(filepath):
+        tik = time.time()
+        for chunk in omni_client.run_AA_stream(filepath):
             # Convert chunk to numpy array
             if cnt == 0:
                 print(f"first chunk time cost: {time.time() - tik:.3f}")

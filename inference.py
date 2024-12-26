@@ -398,8 +398,8 @@ class OmniInference:
         assert os.path.exists(audio_path), f"audio file {audio_path} not found"
         model = self.model
 
-        with self.fabric.init_tensor():
-            model.set_kv_cache(batch_size=2)
+        # with self.fabric.init_tensor():
+        #     model.set_kv_cache(batch_size=2)
 
         mel, leng = load_audio(audio_path)
         audio_feature, input_ids = get_input_ids_whisper_ATBatch(mel, leng, self.whispermodel, self.device)
@@ -415,7 +415,7 @@ class OmniInference:
 
         input_pos = torch.tensor([T], device=device)
         list_output = [[] for i in range(8)]
-        tokens_A, token_T = next_token_batch(
+        tokens_A, token_T, past_key_values = next_token_batch(
             model,
             audio_feature.to(torch.float32).to(model.device),
             input_ids,
@@ -448,7 +448,7 @@ class OmniInference:
         begin_generate = False
         current_index = 0
         for _ in tqdm(range(2, max_returned_tokens - T + 1)):
-            tokens_A, token_T = next_token_batch(
+            tokens_A, token_T, past_key_values = next_token_batch(
                 model,
                 None,
                 model_input_ids,
@@ -458,6 +458,7 @@ class OmniInference:
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
+                past_key_values=past_key_values
             )
 
             if text_end:
@@ -502,7 +503,7 @@ class OmniInference:
             index += 1
         text = self.text_tokenizer.decode(torch.tensor(list_output[-1]))
         print(f"text output: {text}")
-        model.clear_kv_cache()
+        # model.clear_kv_cache()
         return list_output
 
 

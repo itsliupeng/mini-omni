@@ -26,6 +26,7 @@ from tqdm import tqdm
 from huggingface_hub import snapshot_download
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import numpy as np
 
 torch.set_printoptions(sci_mode=False)
 
@@ -421,8 +422,65 @@ class OmniInference:
         self.fabric, self.model, self.text_tokenizer, self.snacmodel, self.whispermodel = load_model(ckpt_dir, device)
 
     def warm_up(self, sample='./data/samples/output1.wav'):
-        for _ in self.run_AT_batch_stream(sample):
+        for _ in self.run_AA_stream(sample):
             pass
+
+    @torch.inference_mode()
+    def run_AA_stream(self, 
+            audio_path, 
+            stream_stride=4,
+            max_returned_tokens=2048, 
+            temperature=0.9, 
+            top_k=1, 
+            top_p=1.0,
+            eos_id_a=_eoa,
+            eos_id_t=_eot,
+        ):
+        assert os.path.exists(audio_path), f"audio file {audio_path} not found"
+        model = self.model
+        whispermodel = self.whispermodel
+        device = self.device
+        text_tokenizer = self.text_tokenizer
+        snacmodel = self.snacmodel
+
+        mel, leng = load_audio(audio_path)
+        audio_feature, input_ids = get_input_ids_whisper( mel, leng, whispermodel, device, special_token_a=_answer_a, special_token_t=_answer_t)
+
+        tokenlist = generate_AA(
+            model,
+            audio_feature,
+            input_ids,
+            [leng],
+            ["A1T2"],
+            max_returned_tokens=2048,
+            temperature=temperature,
+            top_k=top_k,
+            eos_id_a=eos_id_a,
+            eos_id_t=eos_id_t,
+            pad_id_t=_pad_t,
+            shift=padded_text_vocabsize,
+            include_prompt=True,
+            generate_text=True,
+            layershift_shift=padded_text_vocabsize,
+        )
+        
+        audiolist = reconscruct_snac(tokenlist)
+        tokenlist = tokenlist[-1]
+        if text_vocabsize in tokenlist:
+            tokenlist = tokenlist[: tokenlist.index(text_vocabsize)]
+  
+        audio = reconstruct_tensors(audiolist)
+        with torch.inference_mode():
+            audio_hat = snacmodel.decode(audio)
+
+        audio_data = audio_hat.cpu().numpy().astype(np.float64) * 32768.0
+        audio_data = audio_data.astype(np.int16)
+        audio_data = audio_data.tobytes()
+
+        text =  text_tokenizer.decode(torch.tensor(tokenlist)).strip()
+        print(f"text output: {text}")
+        yield audio_data
+        return tokenlist
 
     @torch.inference_mode()
     def run_AT_batch_stream(self, 
@@ -439,8 +497,8 @@ class OmniInference:
         assert os.path.exists(audio_path), f"audio file {audio_path} not found"
         model = self.model
 
-        with self.fabric.init_tensor():
-            model.set_kv_cache(batch_size=2)
+        # with self.fabric.init_tensor():
+        #     model.set_kv_cache(batch_size=2)
 
         mel, leng = load_audio(audio_path)
         audio_feature, input_ids = get_input_ids_whisper_ATBatch(mel, leng, self.whispermodel, self.device)

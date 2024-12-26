@@ -3,7 +3,8 @@ import base64
 import tempfile
 import traceback
 from flask import Flask, Response, stream_with_context
-from inference import OmniInference
+# from inference import OmniInference
+from inference_yi_omni import OmniInference
 
 
 class OmniChatServer(object):
@@ -12,7 +13,6 @@ class OmniChatServer(object):
         server = Flask(__name__)
         # CORS(server, resources=r"/*")
         # server.config["JSON_AS_ASCII"] = False
-
         self.client = OmniInference(ckpt_dir, device)
         self.client.warm_up()
 
@@ -34,7 +34,7 @@ class OmniChatServer(object):
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 f.write(data_buf)
-                audio_generator = self.client.run_AT_batch_stream(f.name, stream_stride, max_tokens)
+                audio_generator = self.client.run_AA_stream(f.name, stream_stride, max_tokens)
                 return Response(stream_with_context(audio_generator), mimetype="audio/wav")
         except Exception as e:
             print(traceback.format_exc())
@@ -42,13 +42,13 @@ class OmniChatServer(object):
 
 # CUDA_VISIBLE_DEVICES=1 gunicorn -w 2 -b 0.0.0.0:60808 'server:create_app()'
 def create_app():
-    server = OmniChatServer(run_app=False)
+    server = OmniChatServer(run_app=False, ckpt_dir="/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_train/checkpoint/iter_0015000_hf")
     return server.server
 
 
 def serve(ip='0.0.0.0', port=60808):
 
-    OmniChatServer(ip, port=port, run_app=True)
+    OmniChatServer(ip, port=port, run_app=True, ckpt_dir="/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_train/checkpoint/iter_0015000_hf")
 
 
 if __name__ == "__main__":
