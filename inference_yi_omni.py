@@ -645,7 +645,9 @@ def test_infer():
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_d1204_fllmall_zhihu_f/checkpoint/iter_0070000_hf"
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_f_d1204_fllm_librilight_quora_zhihu_f/checkpoint/iter_0120000_hf"
     # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_tts/yi6b_bs1k_tts8_d1204_fllmall_librilight_quora_zhihu_C/checkpoint/iter_0140000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_train/checkpoint/iter_0015000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_train/checkpoint/iter_0015000_hf" # good
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_zh/checkpoint/iter_0008100_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/test_audio_instruct/yi6b_bs512_4aatmode_d1030_load_tts8_ckpt_zh_fix/checkpoint/iter_0004000_hf"
     
     # if not os.path.exists(ckpt_dir):
     #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")

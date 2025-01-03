@@ -635,7 +635,6 @@ def generate_TA(
     text_end = False
     text_end_idx = -1
     for j in tqdm(range(2, max_returned_tokens - T + 1)):
-
         model_input_ids = []
         for i in range(num_codebooks):
             model_input_ids.append(
@@ -818,7 +817,8 @@ def generate_ASR(
         for i in range(num_codebooks):
             model_input_ids.append(
                 # torch.tensor([layershift(eos_id_a, i, stride=layershift_stride, shift=layershift_shift)])
-                torch.tensor([layershift(next_audio_tokens[i], i, stride=layershift_stride, shift=layershift_shift)])
+                # torch.tensor([layershift(next_audio_tokens[i], i, stride=layershift_stride, shift=layershift_shift)])
+                torch.tensor([layershift(next_audio_tokens[i], 0, stride=layershift_stride, shift=layershift_shift)])
                 .view(1, -1)
                 .to(torch.int32)
                 .to(device)

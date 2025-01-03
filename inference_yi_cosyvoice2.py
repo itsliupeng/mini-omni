@@ -26,17 +26,19 @@ from huggingface_hub import snapshot_download
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import whisper
+import numpy as np
 
-from moshi.models import loaders
+import onnxruntime
+import sys
 
 torch.set_printoptions(sci_mode=False)
 
-NUM_CODEBOOKS = 8
+NUM_CODEBOOKS = 1
 
 # TODO
 text_vocabsize = 64000
 text_specialtokens = 64
-audio_vocabsize = 2048
+audio_vocabsize = 6561
 audio_specialtokens = 64
 
 padded_text_vocabsize = text_vocabsize + text_specialtokens
@@ -58,8 +60,8 @@ _tts_a = audio_vocabsize + 5
 
 
 
-def layershift(input_id, layer, stride=padded_audio_vocabsize, shift=padded_text_vocabsize):
-    return input_id + shift + layer * stride
+def layershift(input_id, layer=0, stride=padded_audio_vocabsize, shift=padded_text_vocabsize):
+    return input_id + shift
 
 
 def get_input_ids_TA(text, text_tokenizer):
@@ -77,7 +79,7 @@ def get_input_ids_TA(text, text_tokenizer):
 def get_input_ids_TTS(text, text_tokenizer):
     input_ids_item = [[] for _ in range(NUM_CODEBOOKS+1)]
     text_tokens = text_tokenizer.encode(text)
-    for i in range(8):
+    for i in range(NUM_CODEBOOKS):
         input_ids_item[i] = [layershift(_input_a, i)] + [layershift(_pad_a, i)] * len(text_tokens) + [layershift(_eoa, i), layershift(_tts_a, i)]
         input_ids_item[i] = torch.tensor(input_ids_item[i]).unsqueeze(0)
     input_ids_item[-1] = [_input_t] + text_tokens.tolist() + [_eot] + [_tts_t]
@@ -129,21 +131,19 @@ def get_input_ids_mimi(
 
 
 def get_input_ids_asr(
-    audio_wav, mimi_model, device, latency_list
+    speech_feat, speech_tokenizer_session, device, latency_list
 ):
     with torch.no_grad():
-        audio_wav = torch.from_numpy(audio_wav).unsqueeze(0).unsqueeze(0).to(device)
-        audio_tokens = mimi_model.encode(audio_wav)[0]
+        speech_token = speech_tokenizer_session.run(None, {speech_tokenizer_session.get_inputs()[0].name: speech_feat.detach().cpu().numpy(),
+                                            speech_tokenizer_session.get_inputs()[1].name: np.array([speech_feat.shape[2]], dtype=np.int32)})[0].flatten()
 
-    T = audio_tokens.size(-1)
+    T = speech_token.shape[-1]
     input_ids = []
-    for i in range(8):
-        input_ids_item = []
-        input_ids_item.append(layershift(_input_a, i))
-        input_ids_item += [layershift(_pad_a, i)] * latency_list[i] + [layershift(x, i) for x in audio_tokens[i]] +  [layershift(_eoa, i)] + [layershift(_pad_a, i)] * (1-latency_list[i]) + [layershift(_asr_a, i)]
-        input_ids.append(torch.tensor(input_ids_item).unsqueeze(0))
+    input_ids_item = []
+    input_ids_item.append(layershift(_input_a))
+    input_ids_item += [layershift(_pad_a)] * latency_list[0] + [layershift(x) for x in speech_token] +  [layershift(_eoa)] + [layershift(_pad_a)] * (1-latency_list[0]) + [layershift(_asr_a)]
+    input_ids.append(torch.tensor(input_ids_item).unsqueeze(0))
     
-
     input_id_T = torch.tensor([_input_t] + [_pad_t] * (T+1)  + [_eot, _asr_t])
 
     input_ids.append(input_id_T.unsqueeze(0))
@@ -187,8 +187,11 @@ def get_input_ids_whisper_ATBatch(mel, leng, whispermodel, device):
 
 
 def load_audio(path):
-    audio = whisper.load_audio(path)
-    return audio
+    speech = whisper.load_audio(path)
+    speech = speech[..., : 16000 * 30]
+    speech = torch.from_numpy(speech).cuda().unsqueeze(0)
+    feat = whisper.log_mel_spectrogram(speech, n_mels=128)
+    return feat
 
 
 def A1_A2_batch(fabric, audio_feature, input_ids, leng, model, text_tokenizer, step,
@@ -339,7 +342,7 @@ def A1_T1(fabric, input_ids, model, text_tokenizer, step):
 
 
 def T1_A2(fabric, input_ids, model, text_tokenizer, step,
-          mimi_model, out_dir=None):
+          cosyvoice, out_dir=None):
     # with fabric.init_tensor():
     #     model.set_kv_cache(batch_size=1)
     tokenlist = generate_TA(
@@ -375,21 +378,29 @@ def T1_A2(fabric, input_ids, model, text_tokenizer, step,
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
-    with torch.inference_mode(), mimi_model.streaming(1):
-        audiolist = [x[:-1] if idx == 0 else x[1:] for idx, x in enumerate(audiolist)]
-        codecs = torch.tensor(audiolist).unsqueeze(0).cuda()
-        # codecs = codecs[:, :, :-1]
-        print(f"audio codecs >= 2048, number: {torch.sum(codecs >= 2048).item()}") 
-        codecs = torch.where(codecs >= 2048, torch.tensor(0), codecs)
-        if codecs.size(-1) == 0:
+    with torch.inference_mode():
+        device = "cuda"
+        speech_token = torch.tensor(audiolist, dtype=torch.int32)
+        speech_token = speech_token[..., 1:] # remove latency token
+        if speech_token.size(-1) == 0: 
             print("audio codecs is 0")  
         else:
-            audio_hat = mimi_model.decode(codecs)
-            sf.write(
-                f"{out_dir}/{step:02d}.wav",
-                audio_hat.squeeze().cpu().numpy(),
-                24000,
-            )
+            prompt_token = torch.zeros(1, 0, dtype=speech_token.dtype)
+            prompt_feat=torch.zeros(1, 0, 80)
+            embedding = torch.zeros(1, 192)
+
+            tts_mel, _ = cosyvoice.flow.inference(token=speech_token.to(device),
+                                                token_len=torch.tensor([speech_token.shape[1]], dtype=torch.int32).to(device),
+                                                prompt_token=prompt_token.to(device),
+                                                prompt_token_len=torch.tensor([prompt_token.shape[1]], dtype=torch.int32).to(device),
+                                                prompt_feat=prompt_feat.to(device),
+                                                prompt_feat_len=torch.tensor([prompt_feat.shape[1]], dtype=torch.int32).to(device),
+                                                embedding=embedding.to(device),
+                                                finalize=True)
+
+            hift_cache_source = torch.zeros(1, 1, 0)
+            audio_hat, tts_source = cosyvoice.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            sf.write( f"{out_dir}/{step:02d}.wav", audio_hat.squeeze().cpu().numpy(), 24000)
     # model.clear_kv_cache()
     return text_tokenizer.decode(torch.tensor(tokenlist)).strip()
 
@@ -419,10 +430,17 @@ def T1_T2(fabric, input_ids, model, text_tokenizer, step):
 
     
 def load_model(ckpt_dir, device):
-    mimi_weight = "/lp/models/moshiko-pytorch-bf16/tokenizer-e351c8d8-checkpoint125.safetensors"
-    mimi = loaders.get_mimi(mimi_weight, device='cuda')
-    mimi.set_num_codebooks(8)  
-    mimi.cuda()
+    option = onnxruntime.SessionOptions()
+    option.intra_op_num_threads = 1
+    option.execution_mode = onnxruntime.ExecutionMode.ORT_PARALLEL
+    option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+    providers = ["CUDAExecutionProvider"]
+    speech_tokenizer_model = "/lp/models/CosyVoice2-0.5B/speech_tokenizer_v2.onnx"
+    speech_tokenizer_session = onnxruntime.InferenceSession(
+        speech_tokenizer_model,
+        sess_options=option,
+        providers=providers
+    )
 
     text_tokenizer = Tokenizer("/lp/models/Yi-6B")
 
@@ -437,39 +455,26 @@ def load_model(ckpt_dir, device):
 
     model.to(device).eval()
 
-    return None, model, text_tokenizer, mimi
+    return None, model, text_tokenizer, speech_tokenizer_session
 
 
 def test_infer():
     device = "cuda:0"
     out_dir = f"./output/{get_time_str()}"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0012000_hf_A"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_mb2_tts8_fdecoder_librilight_quora_zhihu/checkpoint/iter_0022000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_mb2_tts8_fllmall_librilight_quora_zhihu/checkpoint/iter_0026000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_tllmall_librilight_quora_zhihu/checkpoint/iter_0019500_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/cosyvoice2_pretrain/yi6b_asr_bs1k_f/checkpoint/iter_0057000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/cosyvoice2_pretrain/yi2b_asr_bs1k_trainall/checkpoint/iter_0030000_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/cosyvoice2_pretrain/yi6b_asr_bs1k_fromscratch/checkpoint/iter_0002500_hf"
+    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/cosyvoice2_pretrain/yi6b_asr_bs1k_librilight_asr_fromscratch_f/checkpoint/iter_0001500_hf"
+    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/cosyvoice2_pretrain/yi6b_asr_tts_ntp_bs1k/checkpoint/iter_0058000_hf"
 
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0004000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0004000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0003000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0001000"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0001000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0007000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr/checkpoint/iter_0004000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0008000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts/checkpoint/iter_0011000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_fdecoder_librilight_quora_zhihu_yunting_spotify_tts_asr_ntp/checkpoint/iter_0009500_hf"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM-dev/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4_paudio/checkpoint/iter_0010000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4/checkpoint/iter_0011000_hf"
-    # ckpt_dir = "/lp/code/mla/MLA_Megatron-LM/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4/checkpoint/iter_0005000_hf"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM-dev/out/mimi_pretrain/yi6b_bs1k_tts8_librilight_quora_zhihu_yunting_spotify_asr_aa4_paudio/checkpoint/iter_0074000_hf"
-    # ckpt_dir = "/gpfs/public/pretrain/liupeng/code/mla/MLA_Megatron-LM-dev/out/mimi_pretrain/yi6b_bs1k_tts8_asr4_librilight_quora_zhihu_yunting_spotify_asr_tts/checkpoint/iter_0020000_hf"
-    ckpt_dir = "/lp/code/mla/MLA_Megatron-LM-dev/out/mimi_pretrain/mimi_yi6b_bs1k_librilight_asr/checkpoint/iter_0004000_hf"
+    fabric, model, text_tokenizer, speech_tokenizer_session = load_model(ckpt_dir, device)
     
-    # if not os.path.exists(ckpt_dir):
-    #     print(f"checkpoint directory {ckpt_dir} not found, downloading from huggingface")
-    #     download_model(ckpt_dir)
+    sys.path.append('/lp/code/CosyVoice/third_party/Matcha-TTS')
+    sys.path.append('/lp/code/CosyVoice')
 
-    fabric, model, text_tokenizer, mimi_model = load_model(ckpt_dir, device)
+    from cosyvoice.cli.cosyvoice import CosyVoice2
+
+    cosyvoice = CosyVoice2('/lp/models/CosyVoice2-0.5B', load_jit=False, load_onnx=False, load_trt=False).model
 
     # task = ['A1A2', 'asr', "T1A2", "AA-BATCH", 'T1T2', 'AT']
     # task = ["AA-BATCH"]
@@ -477,7 +482,7 @@ def test_infer():
     # task = ["A1A2"]
     # task = ['T1A2']
     # task = ["asr", "tts"]
-    task = ["asr", "tts"]
+    task = ["tts"]
     print(f"task: {task}")
     # task = ["A1A2"]
 
@@ -520,7 +525,7 @@ def test_infer():
         "上周末，一篇 Google DeepMind 的论文引发了 AI 圈的关注。研究者引入了「苏格拉底式学习」，这是 AI 中递归自我完善的一种新方法。这种方法使系统能够自主增强其能力，超越初始训练数据的限制。通过利用结构化的「语言游戏」，该技术可以为实现通用人工智能提供了实用的路线图。",
     ]
 
-    latency_list = [0]+ [1] * 7
+    latency_list = [1]
 
     # LOAD MODEL
     with torch.no_grad():
@@ -571,9 +576,8 @@ def test_infer():
             index = 0
             step = 0
             for path in test_audio_list:
-                audio_wav = load_audio(path)
-                # audio_feature, input_ids = get_input_ids_whisper(mel, leng, whispermodel, device, special_token_a=_pad_a, special_token_t=_answer_t)
-                input_ids = get_input_ids_asr(audio_wav, mimi_model, device, latency_list)
+                speech_feat = load_audio(path)
+                input_ids = get_input_ids_asr(speech_feat, speech_tokenizer_session, device, latency_list)
                 output = A1_T1(fabric, input_ids, model, text_tokenizer, index).lower().replace(',','').replace('.','').replace('?','')
                 print(f"audio_path: {path}")
                 print(f"audio transcript: {test_audio_transcripts[index]}")
@@ -590,7 +594,7 @@ def test_infer():
             for idx, text in enumerate(tts_text_list):
                 input_ids = get_input_ids_TTS(text, text_tokenizer)
                 text_output = T1_A2(fabric, input_ids, model, text_tokenizer, step,
-                                    mimi_model, out_dir=out_dir)
+                                    cosyvoice, out_dir=out_dir)
                 print(f"-------- idx: {idx} ---------")
                 print(f"input: {text}")
                 print(f"output: {text_output}")
